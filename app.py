@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import altair as alt
 from pathlib import Path
 
 # ----------------------------------------------------------
@@ -11,6 +12,66 @@ st.set_page_config(
     page_icon="🏈",
     layout="wide",
 )
+
+# ----------------------------------------------------------
+# HELPERS
+# ----------------------------------------------------------
+
+import altair as alt
+
+def plot_hist(series, bins=20):
+    """Plot a histogram using Altair so we can control axis ticks."""
+    series = pd.to_numeric(series, errors="coerce").dropna()
+    if series.empty:
+        st.info("No data available for this distribution.")
+        return
+
+    df = pd.DataFrame({"Value": series})
+
+    chart = (
+        alt.Chart(df)
+        .mark_bar()
+        .encode(
+            x=alt.X(
+                "Value:Q",
+                bin=alt.Bin(maxbins=bins),
+                axis=alt.Axis(format="d", tickMinStep=1, title="Value")
+            ),
+            y=alt.Y("count()", title="Count"),
+        )
+        .properties(height=300)
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+
+
+def clean_age_column(series):
+    """Cleans age values by extracting leading integers and dropping junk."""
+    cleaned = []
+
+    for val in series.astype(str):
+        # Strip spaces
+        v = val.strip()
+
+        # Extract leading digits
+        digits = ""
+        for ch in v:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+
+        # Convert to int if valid
+        if digits.isdigit():
+            age = int(digits)
+            if 15 < age < 60:  # realistic NFL ages
+                cleaned.append(age)
+            else:
+                cleaned.append(np.nan)
+        else:
+            cleaned.append(np.nan)
+
+    return pd.Series(cleaned)
 
 # ----------------------------------------------------------
 # LOAD BASIC PLAYER STATS
@@ -120,8 +181,9 @@ selected_positions = st.sidebar.multiselect(
 df_filtered = df_filtered[df_filtered["Position"].isin(selected_positions)]
 
 # ----------------------------------------------------------
-# SUMMARY METRICS
+# SUMARRY STATISTICS
 # ----------------------------------------------------------
+
 st.subheader("Summary Statistics")
 
 col1, col2, col3, col4 = st.columns(4)
@@ -130,7 +192,7 @@ col1.metric("Players Shown", len(df_filtered))
 
 # Safely compute Avg Age
 if "Age" in df_filtered.columns:
-    age_series = pd.to_numeric(df_filtered["Age"], errors="coerce")
+    age_series = clean_age_column(df_filtered["Age"])
     if age_series.notna().any():
         col2.metric("Avg Age", f"{age_series.mean():.1f}")
     else:
@@ -151,6 +213,99 @@ if "Weight (lbs)" in df_filtered.columns:
         col4.metric("Avg Weight (lbs)", f"{w_series.mean():.1f}")
     else:
         col4.metric("Avg Weight (lbs)", "N/A")
+
+# ----------------------------------------------------------
+# LEAGUE OVERVIEW (AGGREGATES OVER FILTERED DATA)
+# ----------------------------------------------------------
+st.write("---")
+st.subheader("League Overview")
+
+tab_pos, tab_team, tab_dist = st.tabs(
+    ["By Position", "By Team", "Distributions"]
+)
+
+# ---- Players by Position ----
+with tab_pos:
+    if "Position" in df_filtered.columns:
+        pos_counts = (
+            df_filtered["Position"]
+            .fillna("Unknown")
+            .value_counts()
+            .sort_values(ascending=False)
+        )
+        st.markdown("**Players by Position (filtered)**")
+
+        pos_df = pos_counts.reset_index()
+        pos_df.columns = ["Position", "Count"]
+
+        pos_chart = (
+            alt.Chart(pos_df)
+            .mark_bar()
+            .encode(
+                x=alt.X("Position:N", sort="-y", title="Position"),
+                y=alt.Y("Count:Q", title="Players"),
+            )
+            .properties(height=300)
+        )
+        st.altair_chart(pos_chart, use_container_width=True)
+    else:
+        st.info("No Position column available.")
+
+
+# ---- Players by Team ----
+with tab_team:
+    if "Current Team" in df_filtered.columns:
+        team_counts = (
+            df_filtered["Current Team"]
+            .fillna("Unknown")
+            .value_counts()
+            .sort_values(ascending=False)
+        )
+
+        st.markdown("**Players by Team (filtered)**")
+
+        team_df = team_counts.reset_index()
+        team_df.columns = ["Team", "Count"]
+
+        team_chart = (
+            alt.Chart(team_df)
+            .mark_bar()
+            .encode(
+                x=alt.X("Team:N", sort="-y", title="Team"),
+                y=alt.Y("Count:Q", title="Players"),
+            )
+            .properties(height=300)
+        )
+        st.altair_chart(team_chart, use_container_width=True)
+    else:
+        st.info("No Current Team column available.")
+
+
+
+# ---- Distributions: Age, Height, Weight ----
+with tab_dist:
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        st.markdown("**Age Distribution**")
+        if "Age" in df_filtered.columns:
+            plot_hist(clean_age_column(df_filtered["Age"]), bins=30)
+        else:
+            st.info("No Age column available.")
+
+    with c2:
+        st.markdown("**Height (in) Distribution**")
+        if "Height (inches)" in df_filtered.columns:
+            plot_hist(df_filtered["Height (inches)"], bins=20)
+        else:
+            st.info("No Height (inches) column available.")
+
+    with c3:
+        st.markdown("**Weight (lbs) Distribution**")
+        if "Weight (lbs)" in df_filtered.columns:
+            plot_hist(df_filtered["Weight (lbs)"], bins=40)
+        else:
+            st.info("No Weight (lbs) column available.")
 
 st.write("---")
 
@@ -175,8 +330,8 @@ if selected_player == "-- Select a player --":
     st.info("Select a player from the dropdown above to view their profile and stats.")
     st.stop()
 
-# Only executed once a real player is selected
 player_data = df_filtered[df_filtered["Name"] == selected_player].iloc[0]
+
 
 
 # ----------------------------------------------------------
@@ -1285,3 +1440,6 @@ if punt_return_df is not None:
 if punting_df is not None:
     with st.expander("Show raw punting stats columns"):
         st.write(list(punting_df.columns))
+
+with st.expander("DEBUG: Raw Age Values"):
+    st.write(df_filtered["Age"].head(50).tolist())
