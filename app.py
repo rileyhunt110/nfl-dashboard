@@ -332,7 +332,27 @@ if selected_player == "-- Select a player --":
 
 player_data = df_filtered[df_filtered["Name"] == selected_player].iloc[0]
 
+# ----------------------------------------------------------
+# OPTIONAL: PLAYER COMPARISON SELECTION
+# ----------------------------------------------------------
+compare_mode = st.checkbox("Compare with another player")
 
+player_data_compare = None
+
+if compare_mode:
+    # Second player list, excluding the primary player
+    compare_candidates = [name for name in player_list if name != selected_player]
+    compare_options = ["-- Select player to compare --"] + compare_candidates
+
+    selected_player_compare = st.selectbox(
+        "Select Player to Compare",
+        compare_options,
+        index=0,
+        key="compare_player_select",
+    )
+
+    if selected_player_compare != "-- Select player to compare --":
+        player_data_compare = df_filtered[df_filtered["Name"] == selected_player_compare].iloc[0]
 
 # ----------------------------------------------------------
 # PLAYER PROFILE
@@ -1228,6 +1248,121 @@ def get_player_career_summary(player_data_row):
     return summary
 
 # ----------------------------------------------------------
+# COMPARISON: BUILD A PER-YEAR DF FOR A PLAYER
+# ----------------------------------------------------------
+def get_player_stat_timeseries(source_df, player_row, id_col="Player Id", year_col="Year"):
+    if source_df is None or id_col not in source_df.columns or year_col not in source_df.columns:
+        return None
+
+    pid = player_row[id_col]
+    df = source_df[source_df[id_col] == pid].copy()
+    if df.empty:
+        return None
+
+    # Clean numeric-like text
+    for col in df.columns:
+        if col not in [id_col, "Name", "Position", "Team", year_col]:
+            if df[col].dtype == object:
+                df[col] = (
+                    df[col]
+                    .astype(str)
+                    .str.replace(",", "", regex=False)
+                    .str.replace("T", "", regex=False)
+                )
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Ensure Year numeric
+    df[year_col] = pd.to_numeric(df[year_col], errors="coerce")
+    df = df.dropna(subset=[year_col])
+    df[year_col] = df[year_col].astype(int)
+
+    return df
+
+
+# ----------------------------------------------------------
+# COMPARISON: GENERIC TWO-PLAYER CHART
+# ----------------------------------------------------------
+def show_two_player_comparison_chart(
+    source_df,
+    player1_row,
+    player2_row,
+    default_metric_name,
+    title,
+    key_prefix,
+):
+    df1 = get_player_stat_timeseries(source_df, player1_row)
+    df2 = get_player_stat_timeseries(source_df, player2_row)
+
+    if df1 is None and df2 is None:
+        st.info("No stats available for either player in this category.")
+        return
+    if df1 is None:
+        st.info(f"No stats available for {player1_row['Name']} in this category.")
+        return
+    if df2 is None:
+        st.info(f"No stats available for {player2_row['Name']} in this category.")
+        return
+
+    # Decide which columns are numeric and useful
+    numeric_cols = [
+        c
+        for c in df1.columns
+        if c not in ["Player Id", "Name", "Position", "Team", "Year"]
+        and pd.api.types.is_numeric_dtype(df1[c])
+    ]
+
+    if not numeric_cols:
+        st.info("No numeric stats available to compare for this category.")
+        return
+
+    # Pick default metric
+    if default_metric_name in numeric_cols:
+        metric = default_metric_name
+    else:
+        metric = numeric_cols[0]
+
+    metric = st.selectbox(
+        f"{title} – Select Metric to Compare",
+        options=numeric_cols,
+        index=numeric_cols.index(metric),
+        key=f"{key_prefix}_compare_metric",
+    )
+
+    name1 = player1_row["Name"]
+    name2 = player2_row["Name"]
+
+    # Build combined dataframe
+    df1_m = df1[["Year", metric]].copy()
+    df1_m["Player"] = name1
+
+    df2_m = df2[["Year", metric]].copy()
+    df2_m["Player"] = name2
+
+    combined = pd.concat([df1_m, df2_m], ignore_index=True)
+
+    # Drop rows where metric is NaN
+    combined = combined.dropna(subset=[metric])
+    if combined.empty:
+        st.info("No valid numeric values to plot for this metric.")
+        return
+
+    # Altair line chart
+    chart = (
+        alt.Chart(combined)
+        .mark_line(point=True)
+        .encode(
+            x=alt.X("Year:O", title="Year"),
+            y=alt.Y(f"{metric}:Q", title=metric),
+            color=alt.Color("Player:N", title="Player"),
+            tooltip=["Player", "Year", metric],
+        )
+        .properties(height=350, title=title)
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+
+
+# ----------------------------------------------------------
 # CAREER SUMMARY CARDS
 # ----------------------------------------------------------
 summary = get_player_career_summary(player_data)
@@ -1280,6 +1415,215 @@ if summary:
                 col.metric(label, fmt_int(value) if isinstance(value, (int, float)) else str(value))
             idx += 4
 
+# ----------------------------------------------------------
+# COMPARISON SUMMARY CARDS (SIDE-BY-SIDE)
+# ----------------------------------------------------------
+if player_data_compare is not None:
+    st.subheader("Comparison: Career Summary")
+
+    summary1 = get_player_career_summary(player_data)
+    summary2 = get_player_career_summary(player_data_compare)
+
+    name1 = player_data["Name"]
+    name2 = player_data_compare["Name"]
+
+    # Use the same key order as before
+    preferred_order = [
+        "Passing Yards",
+        "Passing TDs",
+        "Interceptions Thrown",
+        "Rushing Yards",
+        "Rushing TDs",
+        "Receiving Yards",
+        "Receiving TDs",
+        "Total TDs (approx)",
+        "Total Tackles",
+        "Sacks",
+        "Interceptions",
+        "Kick Return Yards",
+        "Kick Return TDs",
+        "Punt Return Yards",
+        "Punt Return TDs",
+        "FGs Made",
+        "XPs Made",
+        "Punts",
+        "Gross Punting Yards",
+    ]
+
+    # Build a list of (label, val1, val2) for things where one or both have > 0
+    rows = []
+    for key in preferred_order:
+        v1 = summary1.get(key, 0)
+        v2 = summary2.get(key, 0)
+        try:
+            n1 = float(v1)
+            n2 = float(v2)
+        except Exception:
+            continue
+
+        if n1 > 0 or n2 > 0:
+            rows.append((key, int(n1), int(n2)))
+
+    if rows:
+        # Show them in chunks of up to 4 metrics per row
+        for i in range(0, len(rows), 4):
+            chunk = rows[i : i + 4]
+            cols = st.columns(len(chunk))
+            for col, (label, v1, v2) in zip(cols, chunk):
+                col.markdown(f"**{label}**")
+                col.write(f"{name1}: {fmt_int(v1)}")
+                col.write(f"{name2}: {fmt_int(v2)}")
+
+# ----------------------------------------------------------
+# TWO-PLAYER COMPARISON CHART
+# ----------------------------------------------------------
+if player_data_compare is not None:
+    st.write("---")
+    st.subheader("Two-Player Stat Comparison")
+
+    category = st.radio(
+        "Stat Category",
+        [
+            "Passing",
+            "Rushing",
+            "Receiving",
+            "Defense",
+            "Kick Return",
+            "Punt Return",
+            "Field Goals",
+            "Kickoffs",
+            "Punting",
+        ],
+        index=0,
+        horizontal=True,
+        key="compare_category_radio",
+    )
+
+    # ------- PASSING -------
+    if category == "Passing":
+        if passing_df is None:
+            st.info("No passing data available.")
+        else:
+            show_two_player_comparison_chart(
+                source_df=passing_df,
+                player1_row=player_data,
+                player2_row=player_data_compare,
+                default_metric_name="Passing Yards",
+                title="Passing Comparison",
+                key_prefix="compare_passing",
+            )
+
+    # ------- RUSHING -------
+    elif category == "Rushing":
+        if rushing_df is None:
+            st.info("No rushing data available.")
+        else:
+            show_two_player_comparison_chart(
+                source_df=rushing_df,
+                player1_row=player_data,
+                player2_row=player_data_compare,
+                default_metric_name="Rushing Yards",
+                title="Rushing Comparison",
+                key_prefix="compare_rushing",
+            )
+
+    # ------- RECEIVING -------
+    elif category == "Receiving":
+        if receiving_df is None:
+            st.info("No receiving data available.")
+        else:
+            show_two_player_comparison_chart(
+                source_df=receiving_df,
+                player1_row=player_data,
+                player2_row=player_data_compare,
+                default_metric_name="Receiving Yards",
+                title="Receiving Comparison",
+                key_prefix="compare_receiving",
+            )
+
+    # ------- DEFENSE -------
+    elif category == "Defense":
+        if defensive_df is None:
+            st.info("No defensive data available.")
+        else:
+            show_two_player_comparison_chart(
+                source_df=defensive_df,
+                player1_row=player_data,
+                player2_row=player_data_compare,
+                default_metric_name="Total Tackles",  # falls back if not present
+                title="Defensive Comparison",
+                key_prefix="compare_defense",
+            )
+
+    # ------- KICK RETURN -------
+    elif category == "Kick Return":
+        if kick_return_df is None:
+            st.info("No kick return data available.")
+        else:
+            show_two_player_comparison_chart(
+                source_df=kick_return_df,
+                player1_row=player_data,
+                player2_row=player_data_compare,
+                default_metric_name="Yards Returned",
+                title="Kick Return Comparison",
+                key_prefix="compare_kick_return",
+            )
+
+    # ------- PUNT RETURN -------
+    elif category == "Punt Return":
+        if punt_return_df is None:
+            st.info("No punt return data available.")
+        else:
+            show_two_player_comparison_chart(
+                source_df=punt_return_df,
+                player1_row=player_data,
+                player2_row=player_data_compare,
+                default_metric_name="Yards Returned",
+                title="Punt Return Comparison",
+                key_prefix="compare_punt_return",
+            )
+
+    # ------- FIELD GOALS / KICKER -------
+    elif category == "Field Goals":
+        if fg_df is None:
+            st.info("No field goal kicking data available.")
+        else:
+            show_two_player_comparison_chart(
+                source_df=fg_df,
+                player1_row=player_data,
+                player2_row=player_data_compare,
+                default_metric_name="FGs Made",
+                title="Field Goal Kicking Comparison",
+                key_prefix="compare_fg",
+            )
+
+    # ------- KICKOFFS -------
+    elif category == "Kickoffs":
+        if kickoff_df is None:
+            st.info("No kickoff data available.")
+        else:
+            show_two_player_comparison_chart(
+                source_df=kickoff_df,
+                player1_row=player_data,
+                player2_row=player_data_compare,
+                default_metric_name="Kickoff Yards",
+                title="Kickoff Comparison",
+                key_prefix="compare_kickoff",
+            )
+
+    # ------- PUNTING -------
+    elif category == "Punting":
+        if punting_df is None:
+            st.info("No punting data available.")
+        else:
+            show_two_player_comparison_chart(
+                source_df=punting_df,
+                player1_row=player_data,
+                player2_row=player_data_compare,
+                default_metric_name="Gross Punting Yards",
+                title="Punting Comparison",
+                key_prefix="compare_punting",
+            )
 
 # ----------------------------------------------------------
 # POSITION-BASED STAT ORDERING
