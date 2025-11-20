@@ -51,6 +51,21 @@ else:
     passing_df = None
 
 # ----------------------------------------------------------
+# LOAD RUSHING CAREER STATS
+# ----------------------------------------------------------
+rushing_path = Path("data") / "Career_Stats_Rushing.csv"
+
+@st.cache
+def load_rushing_stats(path):
+    return pd.read_csv(path)
+
+if rushing_path.exists():
+    rushing_df = load_rushing_stats(rushing_path)
+else:
+    st.warning("Career_Stats_Rushing.csv not found in /data folder.")
+    rushing_df = None
+
+# ----------------------------------------------------------
 # TITLE
 # ----------------------------------------------------------
 st.title("NFL Player Overview Dashboard")
@@ -152,167 +167,29 @@ with col2:
     st.write(f"**Birth Place:** {player_data['Birth Place']}")
     st.write(f"**Birthday:** {player_data['Birthday']}")
 
-
 # ----------------------------------------------------------
 # PASSING CAREER STATISTICS
 # ----------------------------------------------------------
 st.write("---")
+def show_passing_stats():
+    if passing_df is not None:
 
-if passing_df is not None:
+        player_id = player_data["Player Id"]
+        passing_player = passing_df[passing_df["Player Id"] == player_id]
 
-    player_id = player_data["Player Id"]
-    passing_player = passing_df[passing_df["Player Id"] == player_id]
+        # Rename Sacks → Times Sacked for clarity
+        if "Sacks" in passing_player.columns:
+            passing_player = passing_player.rename(columns={"Sacks": "Times Sacked"})
 
-    # Rename Sacks → Times Sacked for clarity
-    if "Sacks" in passing_player.columns:
-        passing_player = passing_player.rename(columns={"Sacks": "Times Sacked"})
+        # Clean commas from numeric fields (e.g., "4,523")
+        if "Passing Yards" in passing_player.columns:
+            passing_player["Passing Yards"] = passing_player["Passing Yards"].astype(str).str.replace(",", "")
 
-    # Clean commas from numeric fields (e.g., "4,523")
-    if "Passing Yards" in passing_player.columns:
-        passing_player["Passing Yards"] = passing_player["Passing Yards"].astype(str).str.replace(",", "")
+        # Clean "T" suffix from longest pass (e.g., "65T")
+        if "Longest Pass" in passing_player.columns:
+            passing_player["Longest Pass"] = passing_player["Longest Pass"].astype(str).str.replace("T", "", regex=False)
 
-    # Clean "T" suffix from longest pass (e.g., "65T")
-    if "Longest Pass" in passing_player.columns:
-        passing_player["Longest Pass"] = passing_player["Longest Pass"].astype(str).str.replace("T", "", regex=False)
-
-    numeric_cols_list = [
-        "Games Played",
-        "Passes Attempted",
-        "Passes Completed",
-        "Completion Percentage",
-        "Pass Attempts Per Game",
-        "Passing Yards",
-        "Passing Yards Per Attempt",
-        "Passing Yards Per Game",
-        "TD Passes",
-        "Percentage of TDs per Attempts",
-        "Ints",
-        "Int Rate",
-        "Longest Pass",
-        "Passes Longer than 20 Yards",
-        "Passes Longer than 40 Yards",
-        "Times Sacked",
-        "Sacked Yards Lost",
-        "Passer Rating",
-    ]
-
-    for col in numeric_cols_list:
-        if col in passing_player.columns:
-            passing_player[col] = pd.to_numeric(passing_player[col], errors="coerce")
-
-    # Convert integer-like fields to int
-    int_fields = [
-        "Games Played",
-        "Passes Attempted",
-        "Passes Completed",
-        "TD Passes",
-        "Ints",
-        "Longest Pass",
-        "Passes Longer than 20 Yards",
-        "Passes Longer than 40 Yards",
-        "Times Sacked",
-        "Sacked Yards Lost",
-    ]
-
-    for col in int_fields:
-        if col in passing_player.columns:
-            passing_player[col] = pd.to_numeric(passing_player[col], errors="coerce").fillna(0).astype(int)
-
-
-
-    if passing_player.empty:
-        st.markdown("")
-    else:
-        st.markdown("### Career Passing Summary")
-        if "Player Id" in passing_player.columns:
-            display_df = passing_player.drop(columns=["Player Id", "Name", "Position"])
-        else:
-            display_df = passing_player
-
-        # Clean formatting for display (no trailing .0)
-        format_dict = {}
-
-        # Integer-like fields – force them to show as whole numbers
-        int_like_cols = [
-            "Games Played", "Passes Attempted", "Passes Completed",
-            "TD Passes", "Ints", "Longest Pass",
-            "Passes Longer than 20 Yards", "Passes Longer than 40 Yards",
-            "Times Sacked", "Sacked Yards Lost"
-        ]
-
-        for col in int_like_cols:
-            if col in display_df.columns:
-                format_dict[col] = "{:.0f}"
-
-        # Percentage-like fields – show 1 decimal
-        percent_like_cols = [
-            "Completion Percentage",
-            "Percentage of TDs per Attempts",
-            "Int Rate"
-        ]
-
-        for col in percent_like_cols:
-            if col in display_df.columns:
-                format_dict[col] = "{:.1f}"
-
-        # Yardage / averages – show 1 decimal if needed
-        one_decimal_cols = [
-            "Passing Yards Per Attempt",
-            "Passing Yards Per Game",
-            "Pass Attempts Per Game",
-            "Passer Rating"
-        ]
-
-        for col in one_decimal_cols:
-            if col in display_df.columns:
-                format_dict[col] = "{:.1f}"
-
-        # Make a copy to format for display
-        formatted_df = display_df.copy()
-
-        # Integer-like fields – no decimals
-        int_like_cols = [
-            "Games Played", "Passes Attempted", "Passes Completed",
-            "TD Passes", "Ints", "Longest Pass",
-            "Passes Longer than 20 Yards", "Passes Longer than 40 Yards",
-            "Times Sacked", "Sacked Yards Lost"
-        ]
-
-        for col in int_like_cols:
-            if col in formatted_df.columns:
-                formatted_df[col] = pd.to_numeric(formatted_df[col], errors="coerce").round(0).astype("Int64").astype(str)
-
-        # Percentage-like fields – 1 decimal
-        percent_like_cols = [
-            "Completion Percentage",
-            "Percentage of TDs per Attempts",
-            "Int Rate"
-        ]
-
-        for col in percent_like_cols:
-            if col in formatted_df.columns:
-                formatted_df[col] = pd.to_numeric(formatted_df[col], errors="coerce").round(1).astype(str)
-
-        # One-decimal numeric fields
-        one_decimal_cols = [
-            "Passing Yards Per Attempt",
-            "Passing Yards Per Game",
-            "Pass Attempts Per Game",
-            "Passer Rating"
-        ]
-
-        for col in one_decimal_cols:
-            if col in formatted_df.columns:
-                formatted_df[col] = pd.to_numeric(formatted_df[col], errors="coerce").round(1).astype(str)
-
-        st.dataframe(formatted_df)
-
-        # Sort by year for plotting
-        if "Year" in passing_player.columns:
-            passing_player = passing_player.sort_values(by="Year")
-
-        # List of numeric columns
-        numeric_cols = [
+        numeric_cols_list = [
             "Games Played",
             "Passes Attempted",
             "Passes Completed",
@@ -325,60 +202,398 @@ if passing_df is not None:
             "Percentage of TDs per Attempts",
             "Ints",
             "Int Rate",
+            "Longest Pass",
+            "Passes Longer than 20 Yards",
+            "Passes Longer than 40 Yards",
             "Times Sacked",
             "Sacked Yards Lost",
             "Passer Rating",
-            "Passes Longer than 20 Yards",
-            "Passes Longer than 40 Yards",
-            "Longest Pass",
         ]
 
-        numeric_cols = [c for c in numeric_cols if c in passing_player.columns]
+        for col in numeric_cols_list:
+            if col in passing_player.columns:
+                passing_player[col] = pd.to_numeric(passing_player[col], errors="coerce")
 
-        st.markdown("### Plot a Passing Metric Over Time")
-
-        default_metric = "Passing Yards" if "Passing Yards" in numeric_cols else numeric_cols[0]
-
-        metric = st.selectbox(
-            "Select Metric",
-            options=numeric_cols,
-            index=numeric_cols.index(default_metric)
-        )
-
-        # Line chart
-        if "Year" in passing_player.columns:
-            passing_player["Year"] = pd.to_numeric(passing_player["Year"], errors="coerce").fillna(0).astype(int)
-
-
-            # Sort by Year
-            plot_df = passing_player.sort_values(by="Year")
-
-            # Ensure metric column is numeric
-            plot_df[metric] = pd.to_numeric(plot_df[metric], errors="coerce")
-            metric_values = plot_df[metric].dropna()
-
-            if metric_values.empty:
-                st.info("No valid numeric values available for this metric.")
-            else:
-                y_min = metric_values.min()
-                y_max = metric_values.max()
-
-                if y_max == y_min:
-                    # Flat line – just plot without padding
-                    padded_series = plot_df.set_index("Year")[metric]
-                else:
-                    padding = (y_max - y_min) * 0.15  # 15% padding
-                    y_min_adj = max(0, y_min - padding)
-                    y_max_adj = y_max + padding
-                    padded_series = plot_df.set_index("Year")[metric].clip(y_min_adj, y_max_adj)
-
-                st.line_chart(
-                    padded_series,
-                    use_container_width=True
-                )
-
+        if passing_player.empty:
+            st.markdown("")
         else:
-            st.info("No Year column available for line chart.")
+            st.markdown("### Career Passing Summary")
+            if "Player Id" in passing_player.columns:
+                display_df = passing_player.drop(columns=["Player Id", "Name", "Position"])
+            else:
+                display_df = passing_player
+
+            # Clean formatting for display (no trailing .0)
+            format_dict = {}
+
+            # Integer-like fields – force them to show as whole numbers
+            int_like_cols = [
+                "Games Played", "Passes Attempted", "Passes Completed",
+                "TD Passes", "Ints", "Longest Pass",
+                "Passes Longer than 20 Yards", "Passes Longer than 40 Yards",
+                "Times Sacked", "Sacked Yards Lost"
+            ]
+
+            for col in int_like_cols:
+                if col in display_df.columns:
+                    format_dict[col] = "{:.0f}"
+
+            # Percentage-like fields – show 1 decimal
+            percent_like_cols = [
+                "Completion Percentage",
+                "Percentage of TDs per Attempts",
+                "Int Rate"
+            ]
+
+            for col in percent_like_cols:
+                if col in display_df.columns:
+                    format_dict[col] = "{:.1f}"
+
+            # Yardage / averages – show 1 decimal if needed
+            one_decimal_cols = [
+                "Passing Yards Per Attempt",
+                "Passing Yards Per Game",
+                "Pass Attempts Per Game",
+                "Passer Rating"
+            ]
+
+            for col in one_decimal_cols:
+                if col in display_df.columns:
+                    format_dict[col] = "{:.1f}"
+
+            # Make a copy to format for display
+            formatted_df = display_df.copy()
+
+            # Integer-like fields – no decimals
+            int_like_cols = [
+                "Games Played", "Passes Attempted", "Passes Completed",
+                "TD Passes", "Ints", "Longest Pass",
+                "Passes Longer than 20 Yards", "Passes Longer than 40 Yards",
+                "Times Sacked", "Sacked Yards Lost"
+            ]
+
+            for col in int_like_cols:
+                if col in formatted_df.columns:
+                    formatted_df[col] = pd.to_numeric(formatted_df[col], errors="coerce").round(0).astype("Int64").astype(str)
+
+            # Percentage-like fields – 1 decimal
+            percent_like_cols = [
+                "Completion Percentage",
+                "Percentage of TDs per Attempts",
+                "Int Rate"
+            ]
+
+            for col in percent_like_cols:
+                if col in formatted_df.columns:
+                    formatted_df[col] = pd.to_numeric(formatted_df[col], errors="coerce").round(1).astype(str)
+
+            # One-decimal numeric fields
+            one_decimal_cols = [
+                "Passing Yards Per Attempt",
+                "Passing Yards Per Game",
+                "Pass Attempts Per Game",
+                "Passer Rating"
+            ]
+
+            for col in one_decimal_cols:
+                if col in formatted_df.columns:
+                    formatted_df[col] = pd.to_numeric(formatted_df[col], errors="coerce").round(1).astype(str)
+
+            st.dataframe(formatted_df)
+
+            # Sort by year for plotting
+            if "Year" in passing_player.columns:
+                passing_player = passing_player.sort_values(by="Year")
+
+            # List of numeric columns
+            numeric_cols = [
+                "Games Played",
+                "Passes Attempted",
+                "Passes Completed",
+                "Completion Percentage",
+                "Pass Attempts Per Game",
+                "Passing Yards",
+                "Passing Yards Per Attempt",
+                "Passing Yards Per Game",
+                "TD Passes",
+                "Percentage of TDs per Attempts",
+                "Ints",
+                "Int Rate",
+                "Times Sacked",
+                "Sacked Yards Lost",
+                "Passer Rating",
+                "Passes Longer than 20 Yards",
+                "Passes Longer than 40 Yards",
+                "Longest Pass",
+            ]
+
+            numeric_cols = [c for c in numeric_cols if c in passing_player.columns]
+
+            st.markdown("### Plot a Passing Metric Over Time")
+
+            default_metric = "Passing Yards" if "Passing Yards" in numeric_cols else numeric_cols[0]
+
+            metric = st.selectbox(
+                "Select Metric",
+                options=numeric_cols,
+                index=numeric_cols.index(default_metric)
+            )
+
+            # Line chart
+            if "Year" in passing_player.columns:
+                passing_player["Year"] = pd.to_numeric(passing_player["Year"], errors="coerce").fillna(0).astype(int)
+
+
+                # Sort by Year
+                plot_df = passing_player.sort_values(by="Year")
+
+                # Ensure metric column is numeric
+                plot_df[metric] = pd.to_numeric(plot_df[metric], errors="coerce")
+                metric_values = plot_df[metric].dropna()
+
+                if metric_values.empty:
+                    st.info("No valid numeric values available for this metric.")
+                else:
+                    y_min = metric_values.min()
+                    y_max = metric_values.max()
+
+                    if y_max == y_min:
+                        # Flat line – just plot without padding
+                        padded_series = plot_df.set_index("Year")[metric]
+                    else:
+                        padding = (y_max - y_min) * 0.15  # 15% padding
+                        y_min_adj = max(0, y_min - padding)
+                        y_max_adj = y_max + padding
+                        padded_series = plot_df.set_index("Year")[metric].clip(y_min_adj, y_max_adj)
+
+                    st.line_chart(
+                        padded_series,
+                        use_container_width=True
+                    )
+
+            else:
+                st.info("No Year column available for line chart.")
+
+
+# ----------------------------------------------------------
+# RUSHING CAREER STATISTICS
+# ----------------------------------------------------------
+def show_rushing_stats():
+    if rushing_df is not None:
+
+        player_id = player_data["Player Id"]
+        rushing_player = rushing_df[rushing_df["Player Id"] == player_id]
+
+        # Clean commas from numeric fields (e.g., "4,523")
+        if "Rushing Yards" in rushing_player.columns:
+            rushing_player["Rushing Yards"] = rushing_player["Rushing Yards"].astype(str).str.replace(",", "")
+
+        # Clean "T" suffix from Longest Rushing Run (e.g., "65T")
+        if "Longest Rushing Run" in rushing_player.columns:
+            rushing_player["Longest Rushing Run"] = rushing_player["Longest Rushing Run"].astype(str).str.replace("T", "", regex=False)
+
+        # Numeric columns we care about (will filter by existence)
+        rush_numeric_cols_list = [
+            "Games Played",
+            "Rushing Attempts",
+            "Rushing Attempts Per Game",
+            "Rushing Yards",
+            "Yards Per Carry",
+            "Rushing Yards Per Game",
+            "Rushing TDs",
+            "Longest Rushing Run",
+            "Rushing First Downs",
+            "Percentage of Rushing First Downs",
+            "Rushing More Than 20 Yards",
+            "Rushing More Than 40 Yards",
+            "Fumbles"
+        ]
+
+        # Convert to numeric where possible
+        for col in rush_numeric_cols_list:
+            if col in rushing_player.columns:
+                rushing_player[col] = pd.to_numeric(rushing_player[col], errors="coerce")
+
+        if rushing_player.empty:
+            st.markdown("")
+        else:
+            st.markdown("### Career Rushing Summary")
+            if "Player Id" in rushing_player.columns:
+                rush_display_df = rushing_player.drop(columns=["Player Id", "Name", "Position"])
+            else:
+                rush_display_df = rushing_player
+
+            # Clean formatting for display (no trailing .0)
+            rush_format_dict = {}
+
+            # Integer-like fields – force them to show as whole numbers
+            rush_int_like_cols = [
+                "Games Played",
+                "Rushing Attempts",
+                "Rushing Yards",
+                "Rushing TDs",
+                "Longest Rushing Run",
+                "Rushing First Downs",
+                "Rushing More Than 20 Yards",
+                "Rushing More Than 40 Yards",
+                "Fumbles"
+            ]
+
+            for col in rush_int_like_cols:
+                if col in rush_display_df.columns:
+                    rush_format_dict[col] = "{:.0f}"
+
+            # Percentage-like fields – show 1 decimal
+            rush_percent_like_cols = [
+                "Percentage of Rushing First Downs"
+            ]
+
+            for col in rush_percent_like_cols:
+                if col in rush_display_df.columns:
+                    rush_format_dict[col] = "{:.1f}"
+
+            # Yardage / averages – show 1 decimal if needed
+            rush_one_decimal_cols = [
+                "Rushing Attempts Per Game",
+                "Yards Per Carry",
+                "Rushing Yards Per Game"
+            ]
+
+            for col in rush_one_decimal_cols:
+                if col in rush_display_df.columns:
+                    rush_format_dict[col] = "{:.1f}"
+
+            # Make a copy to format for display
+            rush_formatted_df = rush_display_df.copy()
+
+            # Integer-like fields – no decimals
+            rush_int_like_cols = [
+                "Games Played",
+                "Rushing Attempts",
+                "Rushing Yards",
+                "Rushing TDs",
+                "Longest Rushing Run",
+                "Rushing First Downs",
+                "Rushing More Than 20 Yards",
+                "Rushing More Than 40 Yards",
+                "Fumbles"
+            ]
+
+            for col in rush_int_like_cols:
+                if col in rush_formatted_df.columns:
+                    rush_formatted_df[col] = pd.to_numeric(rush_formatted_df[col], errors="coerce").round(0).astype("Int64").astype(str)
+
+            # Percentage-like fields – show 1 decimal
+            rush_percent_like_cols = [
+                "Percentage of Rushing First Downs"
+            ]
+
+            for col in rush_percent_like_cols:
+                if col in rush_display_df.columns:
+                    rush_formatted_df[col] = pd.to_numeric(rush_formatted_df[col], errors="coerce").round(1).astype(str)
+
+            # Yardage / averages – show 1 decimal if needed
+            rush_one_decimal_cols = [
+                "Rushing Attempts Per Game",
+                "Yards Per Carry",
+                "Rushing Yards Per Game"
+            ]
+
+            for col in rush_one_decimal_cols:
+                if col in rush_display_df.columns:
+                    rush_formatted_df[col] = pd.to_numeric(rush_formatted_df[col], errors="coerce").round(1).astype(str)
+
+            st.dataframe(rush_formatted_df)
+
+            # ---------------- Plot rushing metric over time ----------------
+            if "Year" in rushing_player.columns:
+                rushing_player = rushing_player.sort_values(by="Year")
+
+                
+            # Numeric columns we care about (will filter by existence)
+            rush_numeric_cols = [
+                "Games Played",
+                "Rushing Attempts",
+                "Rushing Attempts Per Game",
+                "Rushing Yards",
+                "Yards Per Carry",
+                "Rushing Yards Per Game",
+                "Rushing TDs",
+                "Longest Rushing Run",
+                "Rushing First Downs",
+                "Percentage of Rushing First Downs",
+                "Rushing More Than 20 Yards",
+                "Rushing More Than 40 Yards",
+                "Fumbles"
+            ]
+
+            rush_numeric_cols_list = [c for c in rush_numeric_cols_list if c in rushing_player.columns]
+
+            st.markdown("### Plot a Rushing Metric Over Time")
+
+            rush_default_metric = "Rushing Yards" if "Rushing Yards" in rush_numeric_cols_list else rush_numeric_cols_list[0]
+
+            rush_metric = st.selectbox(
+                "Select Metric",
+                options=rush_numeric_cols,
+                index=rush_numeric_cols.index(rush_default_metric)
+            )
+
+            # Line chart
+            if "Year" in rushing_player.columns:
+                rushing_player["Year"] = pd.to_numeric(rushing_player["Year"], errors="coerce").fillna(0).astype(int)
+
+
+                # Sort by Year
+                plot_df = rushing_player.sort_values(by="Year")
+
+                # Ensure metric column is numeric
+                plot_df[rush_metric] = pd.to_numeric(plot_df[rush_metric], errors="coerce")
+                rush_metric_values = plot_df[rush_metric].dropna()
+
+                if rush_metric_values.empty:
+                    st.info("No valid numeric values available for this metric.")
+                else:
+                    y_min = rush_metric_values.min()
+                    y_max = rush_metric_values.max()
+
+                    if y_max == y_min:
+                        # Flat line – just plot without padding
+                        padded_series = plot_df.set_index("Year")[rush_metric]
+                    else:
+                        padding = (y_max - y_min) * 0.15  # 15% padding
+                        y_min_adj = max(0, y_min - padding)
+                        y_max_adj = y_max + padding
+                        padded_series = plot_df.set_index("Year")[rush_metric].clip(y_min_adj, y_max_adj)
+
+                    st.line_chart(
+                        padded_series,
+                        use_container_width=True
+                    )
+
+            else:
+                st.info("No Year column available for line chart.")
+
+
+# ----------------------------------------------------------
+# POSITION-BASED STAT ORDERING
+# ----------------------------------------------------------
+pos = str(player_data["Position"]).upper()
+
+if pos.startswith("QB"):
+    # Quarterbacks → Passing first, then Rushing
+    show_passing_stats()
+    show_rushing_stats()
+
+elif pos.startswith(("RB", "HB", "FB")):
+    # Running backs/fullbacks → Rushing first, then Passing
+    show_rushing_stats()
+    show_passing_stats()
+
+else:
+    # Everyone else → default order (you can tweak this later)
+    show_passing_stats()
+    show_rushing_stats()
 
 # ----------------------------------------------------------
 # RAW COLUMN DEBUGGER
@@ -388,3 +603,6 @@ with st.expander("Show raw basic stats columns"):
 
 with st.expander("Show raw passing stats columns"):
     st.write(list(passing_df.columns))
+
+with st.expander("Show raw rushing stats columns"):
+    st.write(list(rushing_df.columns))
