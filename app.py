@@ -66,6 +66,21 @@ else:
     rushing_df = None
 
 # ----------------------------------------------------------
+# LOAD RECEIVING CAREER STATS
+# ----------------------------------------------------------
+receiving_path = Path("data") / "Career_Stats_Receiving.csv"
+
+@st.cache
+def load_receiving_stats(path):
+    return pd.read_csv(path)
+
+if receiving_path.exists():
+    receiving_df = load_receiving_stats(receiving_path)
+else:
+    st.warning("Career_Stats_Receiving.csv not found in /data folder.")
+    receiving_df = None
+
+# ----------------------------------------------------------
 # TITLE
 # ----------------------------------------------------------
 st.title("NFL Player Overview Dashboard")
@@ -167,10 +182,11 @@ with col2:
     st.write(f"**Birth Place:** {player_data['Birth Place']}")
     st.write(f"**Birthday:** {player_data['Birthday']}")
 
+st.write("---")
+
 # ----------------------------------------------------------
 # PASSING CAREER STATISTICS
 # ----------------------------------------------------------
-st.write("---")
 def show_passing_stats():
     if passing_df is not None:
 
@@ -574,6 +590,170 @@ def show_rushing_stats():
             else:
                 st.info("No Year column available for line chart.")
 
+# ----------------------------------------------------------
+# RECEIVING CAREER STATISTICS
+# ----------------------------------------------------------
+def show_receiving_stats():
+    if receiving_df is not None:
+
+        player_id = player_data["Player Id"]
+        receiving_player = receiving_df[receiving_df["Player Id"] == player_id].copy()
+
+        if receiving_player.empty:
+            st.info("No receiving stats available for this player.")
+            return
+
+        # Clean commas in yardage (e.g., "1,234")
+        if "Receiving Yards" in receiving_player.columns:
+            receiving_player["Receiving Yards"] = (receiving_player["Receiving Yards"].astype(str).str.replace(",", "", regex=False))
+
+        # Clean "T" suffix on longest reception (e.g., "80T")
+        if "Longest Reception" in receiving_player.columns:
+            receiving_player["Longest Reception"] = (receiving_player["Longest Reception"].astype(str).str.replace("T", "", regex=False))
+
+        # Numeric candidates (we'll only use the ones that actually exist)
+        recv_numeric_candidates = [
+            "Games Played",
+            "Receptions",
+            "Receiving Yards",
+            "Yards Per Reception",
+            "Yards Per Game",
+            "Receiving TDs",
+            "Longest Reception",
+            "First Downs Receptions",
+            "Receptions More Than 20 Yards",
+            "Receptions More Than 40 Yards",
+            "Fumbles",
+        ]
+
+        for col in recv_numeric_candidates:
+            if col in receiving_player.columns:
+                receiving_player[col] = pd.to_numeric(receiving_player[col], errors="coerce")
+
+        # Drop ID-ish columns for display
+        recv_display_df = receiving_player.copy()
+        for c in ["Player Id", "Name", "Position"]:
+            if c in recv_display_df.columns:
+                recv_display_df = recv_display_df.drop(columns=[c])
+
+        st.markdown("### Career Receiving Summary")
+
+        # ---------- FORMAT RECEIVING TABLE ----------
+        formatted_recv_df = recv_display_df.copy()
+
+        # Integer-like fields
+        recv_int_fields = [
+            "Games Played",
+            "Receptions",
+            "Receiving Yards",
+            "Receiving TDs",
+            "Longest Reception",
+            "First Downs Receptions",
+            "Receptions More Than 20 Yards",
+            "Receptions More Than 40 Yards",
+            "Fumbles",
+        ]
+
+        for col in recv_int_fields:
+            if col in formatted_recv_df.columns:
+                formatted_recv_df[col] = (
+                    pd.to_numeric(formatted_recv_df[col], errors="coerce")
+                    .round(0)
+                    .astype("Int64")
+                    .astype(str)
+                )
+
+        # One-decimal fields (remove trailing .0)
+        recv_one_decimal_fields = [
+            "Yards Per Reception",
+            "Yards Per Game",
+        ]
+
+        for col in recv_one_decimal_fields:
+            if col in formatted_recv_df.columns:
+                formatted_recv_df[col] = (
+                    pd.to_numeric(formatted_recv_df[col], errors="coerce")
+                    .round(1)
+                    .apply(lambda x: str(x).rstrip("0").rstrip(".") if "." in str(x) else str(x))
+                )
+
+        # Percentage-like fields
+        recv_percent_fields = [
+            "Percentage of First Downs"
+        ]
+
+        for col in recv_percent_fields:
+            if col in formatted_recv_df.columns:
+                formatted_recv_df[col] = (
+                    pd.to_numeric(formatted_recv_df[col], errors="coerce")
+                    .round(1)
+                    .astype(str)
+                )
+
+        st.dataframe(formatted_recv_df)
+
+
+        # ---------- Plot receiving metric over time ----------
+        if "Year" in receiving_player.columns:
+            receiving_player["Year"] = pd.to_numeric(
+                receiving_player["Year"], errors="coerce"
+            ).astype("Int64")
+
+            plot_recv_df = receiving_player.dropna(subset=["Year"]).copy()
+            plot_recv_df = plot_recv_df.sort_values(by="Year")
+
+            recv_numeric_cols = [
+                c for c in recv_numeric_candidates if c in plot_recv_df.columns
+            ]
+
+            if not recv_numeric_cols:
+                st.info("No numeric receiving metrics found to plot.")
+                return
+
+            st.markdown("### Plot a Receiving Metric Over Time")
+
+            default_recv_metric = (
+                "Receiving Yards"
+                if "Receiving Yards" in recv_numeric_cols
+                else recv_numeric_cols[0]
+            )
+
+            recv_metric = st.selectbox(
+                "Select Receiving Metric",
+                options=recv_numeric_cols,
+                index=recv_numeric_cols.index(default_recv_metric),
+            )
+
+            plot_recv_df[recv_metric] = pd.to_numeric(
+                plot_recv_df[recv_metric], errors="coerce"
+            )
+            metric_values = plot_recv_df[recv_metric].dropna()
+
+            if metric_values.empty:
+                st.info("No valid numeric values available for this receiving metric.")
+                return
+
+            y_min = metric_values.min()
+            y_max = metric_values.max()
+
+            if y_max == y_min:
+                padded_series = plot_recv_df.set_index("Year")[recv_metric]
+            else:
+                padding = (y_max - y_min) * 0.15
+                y_min_adj = max(0, y_min - padding)
+                y_max_adj = y_max + padding
+                padded_series = (
+                    plot_recv_df.set_index("Year")[recv_metric]
+                    .clip(y_min_adj, y_max_adj)
+                )
+
+            st.line_chart(padded_series, use_container_width=True)
+
+        else:
+            st.info("No 'Year' column in receiving stats to plot over time.")
+    else:
+        st.info("Receiving stats file not loaded.")
+
 
 # ----------------------------------------------------------
 # POSITION-BASED STAT ORDERING
@@ -581,19 +761,29 @@ def show_rushing_stats():
 pos = str(player_data["Position"]).upper()
 
 if pos.startswith("QB"):
-    # Quarterbacks → Passing first, then Rushing
+    # Quarterbacks → Passing, then Rushing, then Receiving (if any)
     show_passing_stats()
     show_rushing_stats()
+    show_receiving_stats()
 
 elif pos.startswith(("RB", "HB", "FB")):
-    # Running backs/fullbacks → Rushing first, then Passing
+    # Backs → Rushing, then Receiving, then Passing
+    show_rushing_stats()
+    show_receiving_stats()
+    show_passing_stats()
+
+elif pos.startswith(("WR", "TE")):
+    # Receivers → Receiving, then Rushing (jet sweeps, etc.), then Passing (trick plays)
+    show_receiving_stats()
     show_rushing_stats()
     show_passing_stats()
 
 else:
-    # Everyone else → default order (you can tweak this later)
+    # Other positions → Passing, Rushing, Receiving as fallback
     show_passing_stats()
     show_rushing_stats()
+    show_receiving_stats()
+
 
 # ----------------------------------------------------------
 # RAW COLUMN DEBUGGER
@@ -606,3 +796,6 @@ with st.expander("Show raw passing stats columns"):
 
 with st.expander("Show raw rushing stats columns"):
     st.write(list(rushing_df.columns))
+
+with st.expander("Show raw receiving stats columns"):
+    st.write(list(receiving_df.columns))
