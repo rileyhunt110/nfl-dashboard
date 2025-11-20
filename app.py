@@ -202,12 +202,15 @@ def show_generic_career_stats(
     one_decimal_fields=None,
     percent_fields=None,
     key_prefix="",
+    default_metric_name=None,
 ):
     """
     Generic section:
       - filters source_df by Player Id
+      - converts all NaN/NA in value columns to 0
       - shows a formatted table
       - plots a numeric metric over time (Year) with padding
+      - dropdown metrics are ONLY numeric columns shown in the table
     """
     if source_df is None:
         return
@@ -235,10 +238,26 @@ def show_generic_career_stats(
                     .str.replace("T", "", regex=False)   # remove "T" suffix
                 )
 
-    # Try converting everything except ID/Name/Position/Team/Year to numeric if possible
-    for col in player_rows.columns:
-        if col not in [id_col, "Name", "Position", "Team", year_col]:
-            player_rows[col] = pd.to_numeric(player_rows[col], errors="ignore")
+    # Identify "value" columns (everything except IDs/labels/year)
+    value_cols = [
+        c for c in player_rows.columns
+        if c not in [id_col, "Name", "Position", "Team", year_col]
+    ]
+
+    # Convert value columns to numeric and fill NaN with 0
+    for col in value_cols:
+        player_rows[col] = pd.to_numeric(player_rows[col], errors="coerce").fillna(0)
+
+    # Convert year column to numeric (but don't fill NaN with 0 here yet)
+    if year_col in player_rows.columns:
+        player_rows[year_col] = pd.to_numeric(
+            player_rows[year_col], errors="coerce"
+        ).astype("Int64")
+
+    # If after conversion, the player still somehow has no non-zero data, we can bail quietly
+    if value_cols:
+        # If every row and every value col is 0, it's still "valid", but it's all zeros now
+        pass  # you said "delete or make it all zeros" — we've chosen "make it all zeros"
 
     # ---------- TABLE DISPLAY ----------
     display_df = player_rows.copy()
@@ -250,6 +269,12 @@ def show_generic_career_stats(
 
     display_df = display_df.drop(columns=cols_to_drop, errors="ignore")
 
+    # Also fill NaNs with 0 in the display table to avoid any <NA> visuals
+    for col in display_df.columns:
+        if col != year_col:
+            if pd.api.types.is_numeric_dtype(display_df[col]):
+                display_df[col] = display_df[col].fillna(0)
+
     # Formatting
     formatted_df = display_df.copy()
 
@@ -259,6 +284,7 @@ def show_generic_career_stats(
             if col in formatted_df.columns:
                 formatted_df[col] = (
                     pd.to_numeric(formatted_df[col], errors="coerce")
+                    .fillna(0)
                     .round(0)
                     .astype("Int64")
                     .astype(str)
@@ -270,6 +296,7 @@ def show_generic_career_stats(
             if col in formatted_df.columns:
                 formatted_df[col] = (
                     pd.to_numeric(formatted_df[col], errors="coerce")
+                    .fillna(0)
                     .round(1)
                     .apply(
                         lambda x: (
@@ -280,12 +307,13 @@ def show_generic_career_stats(
                     )
                 )
 
-    # Percentage-like fields: keep 1 decimal, but keep trailing 0
+    # Percentage-like fields: keep 1 decimal, including trailing 0
     if percent_fields:
         for col in percent_fields:
             if col in formatted_df.columns:
                 formatted_df[col] = (
                     pd.to_numeric(formatted_df[col], errors="coerce")
+                    .fillna(0)
                     .round(1)
                     .astype(str)
                 )
@@ -298,17 +326,17 @@ def show_generic_career_stats(
         st.info(f"No '{year_col}' column available to plot over time.")
         return
 
-    player_rows[year_col] = pd.to_numeric(
-        player_rows[year_col], errors="coerce"
-    ).astype("Int64")
     plot_df = player_rows.dropna(subset=[year_col]).copy()
     plot_df = plot_df.sort_values(by=year_col)
 
-    # Choose numeric columns automatically for plotting
+    if plot_df.empty:
+        st.info("No rows with a valid year to plot.")
+        return
+
+    # Dropdown options: ONLY numeric columns that are in the displayed table (not Year)
     numeric_cols = [
-        c for c in plot_df.columns
-        if c not in [id_col, "Name", "Position", "Team", year_col]
-        and pd.api.types.is_numeric_dtype(plot_df[c])
+        c for c in display_df.columns
+        if c != year_col and pd.api.types.is_numeric_dtype(display_df[c])
     ]
 
     if not numeric_cols:
@@ -317,7 +345,13 @@ def show_generic_career_stats(
 
     st.markdown("#### Plot a Metric Over Time")
 
-    default_metric = numeric_cols[0]
+    # Choose default metric: prefer default_metric_name if valid,
+    # otherwise fall back to the first numeric column.
+    if default_metric_name and default_metric_name in numeric_cols:
+        default_metric = default_metric_name
+    else:
+        default_metric = numeric_cols[0]
+
     metric = st.selectbox(
         "Select Metric",
         options=numeric_cols,
@@ -325,8 +359,10 @@ def show_generic_career_stats(
         key=f"{key_prefix}_metric_select",
     )
 
-    plot_df[metric] = pd.to_numeric(plot_df[metric], errors="coerce")
-    metric_values = plot_df[metric].dropna()
+
+    # Use numeric data from plot_df (already NaNs→0 in value columns)
+    plot_df[metric] = pd.to_numeric(plot_df[metric], errors="coerce").fillna(0)
+    metric_values = plot_df[metric]
 
     if metric_values.empty:
         st.info("No valid numeric values available for this metric.")
@@ -339,7 +375,7 @@ def show_generic_career_stats(
         padded_series = plot_df.set_index(year_col)[metric]
     else:
         padding = (y_max - y_min) * 0.15
-        y_min_adj = max(0, y_min - padding)
+        y_min_adj = y_min - padding
         y_max_adj = y_max + padding
         padded_series = plot_df.set_index(year_col)[metric].clip(y_min_adj, y_max_adj)
 
@@ -392,6 +428,7 @@ def show_passing_stats():
         one_decimal_fields=one_decimal_fields,
         percent_fields=percent_fields,
         key_prefix="passing",
+        default_metric_name="Passing Yards",
     )
 
 # ----------------------------------------------------------
@@ -432,6 +469,7 @@ def show_rushing_stats():
         one_decimal_fields=one_decimal_fields,
         percent_fields=percent_fields,
         key_prefix="rushing",
+        default_metric_name="Rushing Yards",
     )
 
 # ----------------------------------------------------------
@@ -467,6 +505,7 @@ def show_receiving_stats():
         one_decimal_fields=one_decimal_fields,
         percent_fields=None,
         key_prefix="receiving",
+        default_metric_name="Receiving Yards",
     )
 
 # ----------------------------------------------------------
@@ -503,6 +542,7 @@ def show_defensive_stats():
         one_decimal_fields=one_decimal_fields,
         percent_fields=None,
         key_prefix="defensive",
+        default_metric_name="Total Tackles",
     )
 
 # ----------------------------------------------------------
@@ -549,6 +589,7 @@ def show_kicker_stats():
         one_decimal_fields=None,
         percent_fields=percent_fields,
         key_prefix="fg",
+        default_metric_name="FGs Made",
     )
 
 # ----------------------------------------------------------
@@ -583,6 +624,7 @@ def show_kick_return_stats():
         one_decimal_fields=one_decimal_fields,
         percent_fields=None,
         key_prefix="kick_return",
+        default_metric_name="Yards Returned",
     )
 
 # ----------------------------------------------------------
@@ -622,6 +664,7 @@ def show_kickoff_stats():
         one_decimal_fields=one_decimal_fields,
         percent_fields=percent_fields,
         key_prefix="kickoff",
+        default_metric_name="Kickoff Yards",
     )
 
 # ----------------------------------------------------------
@@ -679,6 +722,7 @@ def show_punt_return_stats():
         one_decimal_fields=one_decimal_fields,
         percent_fields=None,
         key_prefix="punt_return",
+        default_metric_name="Yards Returned",
     )
 
 # ----------------------------------------------------------
@@ -719,6 +763,7 @@ def show_punting_stats():
         one_decimal_fields=one_decimal_fields,
         percent_fields=None,
         key_prefix="punting",
+        default_metric_name="Gross Punting Yards",
     )
 
 # ----------------------------------------------------------
@@ -752,6 +797,7 @@ def show_off_defensive_stats():
         int_fields=int_fields,
         percent_fields=None,
         key_prefix="defensive",
+        default_metric_name="Total Tackles",
     )
 
 # ----------------------------------------------------------
@@ -794,6 +840,7 @@ def show_off_passing_stats():
         int_fields=int_fields,
         percent_fields=percent_fields,
         key_prefix="passing",
+        default_metric_name="Passing Yards",
     )
 
 # ----------------------------------------------------------
@@ -832,6 +879,7 @@ def show_off_rushing_stats():
         int_fields=int_fields,
         one_decimal_fields=one_decimal_fields,
         key_prefix="rushing",
+        default_metric_name="Rushing Yards",
     )
 
 # ----------------------------------------------------------
@@ -869,6 +917,7 @@ def show_off_receiving_stats():
         one_decimal_fields=one_decimal_fields,
         percent_fields=None,
         key_prefix="receiving",
+        default_metric_name="Receiving Yards",
     )
 
 # ----------------------------------------------------------
