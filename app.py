@@ -160,9 +160,24 @@ st.write("---")
 st.subheader("Player Lookup")
 
 player_list = sorted(df_filtered["Name"].unique())
-selected_player = st.selectbox("Select a Player", player_list)
 
+# Add a placeholder option at the top
+player_options = ["-- Select a player --"] + player_list
+
+selected_player = st.selectbox(
+    "Select a Player",
+    player_options,
+    index=0,  # default to the placeholder
+)
+
+# If no real player is selected yet, show a hint and stop the script
+if selected_player == "-- Select a player --":
+    st.info("Select a player from the dropdown above to view their profile and stats.")
+    st.stop()
+
+# Only executed once a real player is selected
 player_data = df_filtered[df_filtered["Name"] == selected_player].iloc[0]
+
 
 # ----------------------------------------------------------
 # PLAYER PROFILE
@@ -186,7 +201,6 @@ with col2:
     st.write(f"**College:** {player_data['College']}")
     st.write(f"**Birth Place:** {player_data['Birth Place']}")
     st.write(f"**Birthday:** {player_data['Birthday']}")
-
 
 # ----------------------------------------------------------
 # GENERIC CAREER STATS SECTION
@@ -921,65 +935,306 @@ def show_off_receiving_stats():
     )
 
 # ----------------------------------------------------------
+# CAREER SUMMARY HELPER
+# ----------------------------------------------------------
+def get_player_career_summary(player_data_row):
+    """Compute key career totals across all stat tables for a player."""
+    summary = {}
+    player_id = player_data_row["Player Id"]
+
+    # ----- Passing -----
+    if passing_df is not None and "Player Id" in passing_df.columns:
+        p = passing_df[passing_df["Player Id"] == player_id].copy()
+        if not p.empty:
+            if "Passing Yards" in p.columns:
+                p["Passing Yards"] = (
+                    p["Passing Yards"].astype(str).str.replace(",", "", regex=False)
+                )
+                val = pd.to_numeric(p["Passing Yards"], errors="coerce").fillna(0).sum()
+                summary["Passing Yards"] = int(val)
+
+            if "TD Passes" in p.columns:
+                val = pd.to_numeric(p["TD Passes"], errors="coerce").fillna(0).sum()
+                summary["Passing TDs"] = int(val)
+
+            if "Ints" in p.columns:
+                val = pd.to_numeric(p["Ints"], errors="coerce").fillna(0).sum()
+                summary["Interceptions Thrown"] = int(val)
+
+    # ----- Rushing -----
+    if rushing_df is not None and "Player Id" in rushing_df.columns:
+        r = rushing_df[rushing_df["Player Id"] == player_id].copy()
+        if not r.empty:
+            if "Rushing Yards" in r.columns:
+                r["Rushing Yards"] = (
+                    r["Rushing Yards"].astype(str).str.replace(",", "", regex=False)
+                )
+                val = pd.to_numeric(r["Rushing Yards"], errors="coerce").fillna(0).sum()
+                summary["Rushing Yards"] = int(val)
+
+            if "Rushing TDs" in r.columns:
+                val = pd.to_numeric(r["Rushing TDs"], errors="coerce").fillna(0).sum()
+                summary["Rushing TDs"] = int(val)
+
+    # ----- Receiving -----
+    if receiving_df is not None and "Player Id" in receiving_df.columns:
+        rec = receiving_df[receiving_df["Player Id"] == player_id].copy()
+        if not rec.empty:
+            if "Receiving Yards" in rec.columns:
+                rec["Receiving Yards"] = (
+                    rec["Receiving Yards"].astype(str).str.replace(",", "", regex=False)
+                )
+                val = pd.to_numeric(rec["Receiving Yards"], errors="coerce").fillna(0).sum()
+                summary["Receiving Yards"] = int(val)
+
+            if "Receiving TDs" in rec.columns:
+                val = pd.to_numeric(rec["Receiving TDs"], errors="coerce").fillna(0).sum()
+                summary["Receiving TDs"] = int(val)
+
+    # ----- Defense -----
+    if defensive_df is not None and "Player Id" in defensive_df.columns:
+        d = defensive_df[defensive_df["Player Id"] == player_id].copy()
+        if not d.empty:
+            if "Total Tackles" in d.columns:
+                val = pd.to_numeric(d["Total Tackles"], errors="coerce").fillna(0).sum()
+                summary["Total Tackles"] = int(val)
+
+            if "Sacks" in d.columns:
+                val = pd.to_numeric(d["Sacks"], errors="coerce").fillna(0).sum()
+                summary["Sacks"] = float(val)
+
+            if "Ints" in d.columns:
+                val = pd.to_numeric(d["Ints"], errors="coerce").fillna(0).sum()
+                summary["Interceptions"] = int(val)
+
+    # ----- Kick / Punt Returns -----
+    if kick_return_df is not None and "Player Id" in kick_return_df.columns:
+        kr = kick_return_df[kick_return_df["Player Id"] == player_id].copy()
+        if not kr.empty:
+            if "Yards Returned" in kr.columns:
+                kr["Yards Returned"] = (
+                    kr["Yards Returned"].astype(str).str.replace(",", "", regex=False)
+                )
+                val = pd.to_numeric(kr["Yards Returned"], errors="coerce").fillna(0).sum()
+                summary["Kick Return Yards"] = int(val)
+
+            if "Returns for TDs" in kr.columns:
+                val = pd.to_numeric(kr["Returns for TDs"], errors="coerce").fillna(0).sum()
+                summary["Kick Return TDs"] = int(val)
+
+    if punt_return_df is not None and "Player Id" in punt_return_df.columns:
+        pr = punt_return_df[punt_return_df["Player Id"] == player_id].copy()
+        if not pr.empty:
+            if "Yards Returned" in pr.columns:
+                pr["Yards Returned"] = (
+                    pr["Yards Returned"].astype(str).str.replace(",", "", regex=False)
+                )
+                val = pd.to_numeric(pr["Yards Returned"], errors="coerce").fillna(0).sum()
+                summary["Punt Return Yards"] = int(val)
+
+            if "Returns for TDs" in pr.columns:
+                val = pd.to_numeric(pr["Returns for TDs"], errors="coerce").fillna(0).sum()
+                summary["Punt Return TDs"] = int(val)
+
+    # ----- Kicking / Punting -----
+    if fg_df is not None and "Player Id" in fg_df.columns:
+        k = fg_df[fg_df["Player Id"] == player_id].copy()
+        if not k.empty:
+            if "FGs Made" in k.columns:
+                val = pd.to_numeric(k["FGs Made"], errors="coerce").fillna(0).sum()
+                summary["FGs Made"] = int(val)
+
+            if "Extra Points Made" in k.columns:
+                val = pd.to_numeric(k["Extra Points Made"], errors="coerce").fillna(0).sum()
+                summary["XPs Made"] = int(val)
+
+    if punting_df is not None and "Player Id" in punting_df.columns:
+        pnt = punting_df[punting_df["Player Id"] == player_id].copy()
+        if not pnt.empty:
+            if "Punts" in pnt.columns:
+                val = pd.to_numeric(pnt["Punts"], errors="coerce").fillna(0).sum()
+                summary["Punts"] = int(val)
+
+            if "Gross Punting Yards" in pnt.columns:
+                pnt["Gross Punting Yards"] = (
+                    pnt["Gross Punting Yards"].astype(str).str.replace(",", "", regex=False)
+                )
+                val = pd.to_numeric(pnt["Gross Punting Yards"], errors="coerce").fillna(0).sum()
+                summary["Gross Punting Yards"] = int(val)
+
+    # Optional: combined touchdowns (rough version)
+    td_total = 0
+    for key in ["Passing TDs", "Rushing TDs", "Receiving TDs", "Kick Return TDs", "Punt Return TDs"]:
+        if key in summary:
+            td_total += summary[key]
+    if td_total > 0:
+        summary["Total TDs (approx)"] = td_total
+
+    return summary
+
+# ----------------------------------------------------------
+# CAREER SUMMARY CARDS
+# ----------------------------------------------------------
+summary = get_player_career_summary(player_data)
+
+if summary:
+    st.subheader("Career Summary")
+
+    # Choose a display order for keys (if present)
+    preferred_order = [
+        "Passing Yards",
+        "Passing TDs",
+        "Interceptions Thrown",
+        "Rushing Yards",
+        "Rushing TDs",
+        "Receiving Yards",
+        "Receiving TDs",
+        "Total TDs (approx)",
+        "Total Tackles",
+        "Sacks",
+        "Interceptions",
+        "Kick Return Yards",
+        "Kick Return TDs",
+        "Punt Return Yards",
+        "Punt Return TDs",
+        "FGs Made",
+        "XPs Made",
+        "Punts",
+        "Gross Punting Yards",
+    ]
+
+    # Build a list of (label, value) for keys that exist and are > 0
+    cards = []
+    for key in preferred_order:
+        if key in summary and summary[key] is not None:
+            try:
+                val = float(summary[key])
+            except Exception:
+                continue
+            if val > 0:
+                cards.append((key, summary[key]))
+
+    if cards:
+        # Show in rows of up to 4 cards
+        n = len(cards)
+        idx = 0
+        while idx < n:
+            row_cards = cards[idx: idx + 4]
+            cols = st.columns(len(row_cards))
+            for col, (label, value) in zip(cols, row_cards):
+                col.metric(label, fmt_int(value) if isinstance(value, (int, float)) else str(value))
+            idx += 4
+
+
+# ----------------------------------------------------------
 # POSITION-BASED STAT ORDERING
 # ----------------------------------------------------------
+# ----------------------------------------------------------
+# TABS FOR STATS
+# ----------------------------------------------------------
+tab_offense, tab_defense, tab_special = st.tabs(
+    ["Offense", "Defense", "Special Teams"]
+)
+
 pos = str(player_data["Position"]).upper()
 
 if pos.startswith("QB"):
     # Quarterbacks → Passing, then Rushing, then Receiving
-    show_passing_stats()
-    show_rushing_stats()
-    show_off_receiving_stats()
-    show_off_defensive_stats()
+    with tab_offense:
+        show_passing_stats()
+        show_rushing_stats()
+        show_off_receiving_stats()
+    with tab_defense:
+        show_off_defensive_stats()
 
 elif pos.startswith(("RB", "HB", "FB")):
     # Backs → Rushing, then Receiving, then Passing
-    show_rushing_stats()
-    show_receiving_stats()
-    show_off_passing_stats()
-    show_kick_return_stats()
-    show_punt_return_stats()
-    show_off_defensive_stats()
+    with tab_offense:
+        show_rushing_stats()
+        show_receiving_stats()
+        show_off_passing_stats()
+        show_kick_return_stats()
+        show_punt_return_stats()
+    with tab_defense:
+        show_off_defensive_stats()
 
 elif pos.startswith(("WR", "TE")):
     # Receivers → Receiving, then Rushing, then Passing
-    show_receiving_stats()
-    show_off_rushing_stats()
-    show_off_passing_stats()
-    show_kick_return_stats()
-    show_punt_return_stats()
-    show_off_defensive_stats()
+    with tab_offense:
+        show_receiving_stats()
+        show_off_rushing_stats()
+        show_off_passing_stats()
+    with tab_special:
+        show_kick_return_stats()
+        show_punt_return_stats()
+    with tab_defense:
+        show_off_defensive_stats()
 
-elif pos.startswith(("G", "OG", "OL", "OT", "T", "LS", "C")):
+elif pos.startswith(("G", "OG", "OL")):
+        # Everyone else → default order, but still see the big 3 if they have data
+    with tab_offense:
+        show_offensive_line_stats()
+        show_off_rushing_stats()
+        show_off_receiving_stats()
+    with tab_defense:
+        show_off_defensive_stats()
+
+elif pos.startswith(("OT", "T")):
     # Everyone else → default order, but still see the big 3 if they have data
-    show_offensive_line_stats()
-    show_off_rushing_stats()
-    show_off_receiving_stats()
-    show_off_defensive_stats()
+    with tab_offense:
+        show_offensive_line_stats()
+        show_off_rushing_stats()
+        show_off_receiving_stats()
+    with tab_defense:
+        show_off_defensive_stats()
+
+elif pos.startswith(("LS", "C")):
+    # Everyone else → default order, but still see the big 3 if they have data
+    with tab_offense:
+        show_offensive_line_stats()
+        show_off_rushing_stats()
+        show_off_receiving_stats()
+    with tab_defense:
+        show_off_defensive_stats()
     
-elif pos.startswith(("K")):
-    show_kicker_stats()
-    show_kickoff_stats()
-    show_punting_stats()
-    show_off_defensive_stats()
-    show_off_passing_stats()
+if pos.startswith(("K")):
+    with tab_special:
+        show_kicker_stats()
+        show_kickoff_stats()
+        show_punting_stats()
+    with tab_defense:
+        show_off_defensive_stats()
+    with tab_offense:
+        show_off_passing_stats()
 
 elif pos.startswith(("P")):
-    show_punting_stats()
-    show_off_rushing_stats()
-    show_kicker_stats()
-    show_kickoff_stats()
-    show_off_defensive_stats()
-    show_off_passing_stats()
+    with tab_special:
+        show_punting_stats()
+        show_kicker_stats()
+        show_kickoff_stats()
+    with tab_offense:
+        show_off_rushing_stats()
+        show_off_passing_stats()
+    with tab_defense:
+        show_off_defensive_stats()
 
-elif pos.startswith("CB", "DB", "FS", "SS", "SAF"):
-    show_defensive_stats()
-    show_kick_return_stats()
-    show_punt_return_stats()
-    show_off_receiving_stats()
+if pos.startswith(("CB", "DB", "FS")):
+    with tab_defense:
+        show_defensive_stats()
+    with tab_special:
+        show_kick_return_stats()
+        show_punt_return_stats()
+    with tab_offense:
+        show_off_receiving_stats()
 
-else:
-    show_defensive_stats()
+elif pos.startswith(("SS", "SAF")):
+    with tab_defense:
+        show_defensive_stats()
+    with tab_special:
+        show_kick_return_stats()
+        show_punt_return_stats()
+    with tab_offense:
+        show_off_receiving_stats()
 
 # ----------------------------------------------------------
 # RAW COLUMN DEBUGGERS
