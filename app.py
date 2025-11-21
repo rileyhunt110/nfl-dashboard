@@ -73,6 +73,185 @@ def clean_age_column(series):
 
     return pd.Series(cleaned)
 
+# LEAGUE LEADERS HELPERS
+def compute_leaders(
+    stat_df,
+    value_col,
+    top_n=10,
+    label=None,
+    year=None,
+):
+    """
+    Aggregate a stat per player and return top N.
+    If `year` is provided and the dataframe has a 'Year' column,
+    it filters to that season before aggregating.
+
+    Also respects current sidebar filters via df_filtered (Player Id subset).
+    """
+    if stat_df is None:
+        return None
+
+    if value_col not in stat_df.columns:
+        return None
+
+    df = stat_df.copy()
+
+    # Optional single-season filter
+    if year is not None and "Year" in df.columns:
+        df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
+        df = df[df["Year"] == year]
+
+    # Minimal subset
+    cols_to_keep = ["Player Id", "Name", value_col]
+    cols_to_keep = [c for c in cols_to_keep if c in df.columns]
+    df = df[cols_to_keep].copy()
+
+    # Clean numeric field (commas, 'T', etc.)
+    df[value_col] = (
+        df[value_col]
+        .astype(str)
+        .str.replace(",", "", regex=False)
+        .str.replace("T", "", regex=False)
+    )
+    df[value_col] = pd.to_numeric(df[value_col], errors="coerce").fillna(0)
+
+    # Group by player (we do NOT group by Year after filtering; we want
+    # per-player totals within the selected year or across all years)
+    group_cols = [c for c in ["Player Id", "Name"] if c in df.columns]
+    if not group_cols:
+        return None
+
+    grouped = (
+        df.groupby(group_cols, as_index=False)[value_col]
+        .sum()
+    )
+
+    # Bring in team & position from basic stats (df_filtered)
+    join_cols = [c for c in ["Player Id"] if c in grouped.columns and c in df_filtered.columns]
+    if join_cols:
+        meta_cols = [c for c in ["Player Id", "Position", "Current Team"] if c in df_filtered.columns]
+        meta = df_filtered[meta_cols].drop_duplicates(subset=join_cols)
+        leaders = grouped.merge(meta, on=join_cols, how="left")
+    else:
+        leaders = grouped
+
+    # Respect current filters (df_filtered has only filtered players already)
+    if "Player Id" in leaders.columns and "Player Id" in df_filtered.columns:
+        allowed_ids = set(df_filtered["Player Id"])
+        leaders = leaders[leaders["Player Id"].isin(allowed_ids)]
+
+    # Drop 0 rows
+    leaders = leaders[leaders[value_col] > 0]
+
+    if leaders.empty:
+        return None
+
+    leaders = leaders.sort_values(by=value_col, ascending=False).head(top_n)
+
+    # Nice display / chart dataframe
+    leaders = leaders.copy()
+    leaders.rename(columns={value_col: label or value_col}, inplace=True)
+
+    return leaders
+
+def show_leaderboard(title, leaders_df, stat_col):
+    """Show a leaderboard table + horizontal bar chart, with optional jump-to-player."""
+    if leaders_df is None or leaders_df.empty:
+        st.info(f"No data available for {title.lower()} under current filters.")
+        return
+
+    st.markdown(f"**{title}**")
+
+    # Display table (Name, Team, Position, Stat)
+    display_cols = []
+    for c in ["Name", "Current Team", "Position", stat_col]:
+        if c in leaders_df.columns:
+            display_cols.append(c)
+
+    st.dataframe(leaders_df[display_cols])
+
+    # Build chart
+    if "Name" in leaders_df.columns and stat_col in leaders_df.columns:
+        chart_df = leaders_df[["Name", stat_col]].copy()
+        chart = (
+            alt.Chart(chart_df)
+            .mark_bar()
+            .encode(
+                y=alt.Y("Name:N", sort="-x", title="Player"),
+                x=alt.X(f"{stat_col}:Q", title=stat_col),
+                tooltip=["Name", stat_col],
+            )
+            .properties(height=300)
+        )
+        st.altair_chart(chart, use_container_width=True)
+
+# TEAM DASHBOARD HELPERS
+def compute_team_stat_totals(
+    stat_df,
+    team_player_ids,
+    value_col,
+    top_n=5,
+    label=None,
+):
+    """
+    For a given career stats dataframe (e.g., passing_df) and
+    a set of player IDs on the selected team, compute:
+      - total stat for the team
+      - top N players on that team for this stat
+    Returns (total_value, top_df_or_None).
+    """
+    if stat_df is None:
+        return 0, None
+    if value_col not in stat_df.columns:
+        return 0, None
+    if not team_player_ids:
+        return 0, None
+
+    df_stats = stat_df.copy()
+    if "Player Id" not in df_stats.columns:
+        return 0, None
+
+    df_stats = df_stats[df_stats["Player Id"].isin(team_player_ids)].copy()
+    if df_stats.empty:
+        return 0, None
+
+    # Clean numeric
+    df_stats[value_col] = (
+        df_stats[value_col]
+        .astype(str)
+        .str.replace(",", "", regex=False)
+        .str.replace("T", "", regex=False)
+    )
+    df_stats[value_col] = pd.to_numeric(df_stats[value_col], errors="coerce").fillna(0)
+
+    # Group by player (sum across seasons)
+    group_cols = [c for c in ["Player Id", "Name"] if c in df_stats.columns]
+    grouped = (
+        df_stats.groupby(group_cols, as_index=False)[value_col]
+        .sum()
+    )
+
+    total = grouped[value_col].sum()
+
+    # Attach position & current team from basic stats (global df)
+    join_cols = [c for c in ["Player Id"] if c in grouped.columns and c in df.columns]
+    if join_cols:
+        meta_cols = [c for c in ["Player Id", "Position", "Current Team"] if c in df.columns]
+        meta = df[meta_cols].drop_duplicates(subset=join_cols)
+        top_df = grouped.merge(meta, on=join_cols, how="left")
+    else:
+        top_df = grouped
+
+    top_df = top_df[top_df[value_col] > 0]
+    if top_df.empty:
+        return total, None
+
+    top_df = top_df.sort_values(by=value_col, ascending=False).head(top_n)
+    top_df = top_df.copy()
+    top_df.rename(columns={value_col: label or value_col}, inplace=True)
+
+    return total, top_df
+
 # ----------------------------------------------------------
 # LOAD BASIC PLAYER STATS
 # ----------------------------------------------------------
@@ -242,10 +421,10 @@ if "Weight (lbs)" in df_filtered.columns:
 # ----------------------------------------------------------
 st.write("---")
 st.subheader("League Overview")
-
-tab_pos, tab_team, tab_dist = st.tabs(
-    ["By Position", "By Team", "Distributions"]
+tab_pos, tab_team, tab_dist, tab_leaders = st.tabs(
+    ["Positions", "Teams", "Distributions", "League Leaders"]
 )
+
 
 # ---- Players by Position ----
 with tab_pos:
@@ -275,33 +454,193 @@ with tab_pos:
         st.info("No Position column available.")
 
 
-# ---- Players by Team ----
+# TEAMS (TEAM DASHBOARDS)
 with tab_team:
-    if "Current Team" in df_filtered.columns:
-        team_counts = (
-            df_filtered["Current Team"]
-            .fillna("Unknown")
-            .value_counts()
-            .sort_values(ascending=False)
-        )
+    st.markdown("### Team Dashboard")
 
-        st.markdown("**Players by Team (filtered)**")
+    # Use all teams from the basic stats (not filtered),
+    # but you could use df_filtered if you want it tied to sidebar filters.
+    all_teams = (
+        df["Current Team"]
+        .dropna()
+        .astype(str)
+        .sort_values()
+        .unique()
+        .tolist()
+    )
 
-        team_df = team_counts.reset_index()
-        team_df.columns = ["Team", "Count"]
-
-        team_chart = (
-            alt.Chart(team_df)
-            .mark_bar()
-            .encode(
-                x=alt.X("Team:N", sort="-y", title="Team"),
-                y=alt.Y("Count:Q", title="Players"),
-            )
-            .properties(height=300)
-        )
-        st.altair_chart(team_chart, use_container_width=True)
+    if not all_teams:
+        st.info("No team information available.")
     else:
-        st.info("No Current Team column available.")
+        selected_team = st.selectbox(
+            "Select a Team",
+            all_teams,
+            key="team_dashboard_select",
+        )
+
+        team_basic = df[df["Current Team"] == selected_team].copy()
+
+        if team_basic.empty:
+            st.info("No players found for this team.")
+        else:
+            # ---------- SUMMARY METRICS ----------
+            st.markdown(f"#### {selected_team} Overview")
+
+            # Player count
+            num_players = len(team_basic)
+
+            # Avg age / height / weight
+            age_series = pd.to_numeric(team_basic.get("Age"), errors="coerce")
+            h_series = pd.to_numeric(team_basic.get("Height (inches)"), errors="coerce")
+            w_series = pd.to_numeric(team_basic.get("Weight (lbs)"), errors="coerce")
+
+            col_a, col_b, col_c, col_d = st.columns(4)
+
+            col_a.metric("Players", num_players)
+
+            if age_series.notna().any():
+                col_b.metric("Avg Age", f"{age_series.mean():.1f}")
+            else:
+                col_b.metric("Avg Age", "N/A")
+
+            if h_series.notna().any():
+                col_c.metric("Avg Height (in)", f"{h_series.mean():.1f}")
+            else:
+                col_c.metric("Avg Height (in)", "N/A")
+
+            if w_series.notna().any():
+                col_d.metric("Avg Weight (lbs)", f"{w_series.mean():.1f}")
+            else:
+                col_d.metric("Avg Weight (lbs)", "N/A")
+
+            st.write("---")
+
+            # ---------- ROSTER TABLE ----------
+            st.markdown("#### Roster")
+
+            roster_cols = [
+                "Name",
+                "Number",
+                "Position",
+                "Age",
+                "Height (inches)",
+                "Weight (lbs)",
+                "Experience",
+                "College",
+            ]
+            roster_cols = [c for c in roster_cols if c in team_basic.columns]
+
+            st.dataframe(team_basic[roster_cols].sort_values(by="Position"))
+
+            st.write("---")
+
+            # Set of player IDs on this team (for career stats aggregation)
+            team_player_ids = set(team_basic["Player Id"].dropna()) if "Player Id" in team_basic.columns else set()
+
+            # ---------- TEAM AGGREGATE STATS ----------
+            st.markdown("#### Team Career Totals (All Players on Current Roster)")
+
+            col_off1, col_off2 = st.columns(2)
+
+            with col_off1:
+                # Passing
+                if passing_df is not None:
+                    total_pass_yds, top_passers = compute_team_stat_totals(
+                        passing_df,
+                        team_player_ids,
+                        value_col="Passing Yards",
+                        top_n=5,
+                        label="Passing Yards",
+                    )
+                    st.metric("Total Passing Yards", f"{int(total_pass_yds):,}")
+
+                    if top_passers is not None and not top_passers.empty:
+                        st.markdown("**Top Passers**")
+                        st.dataframe(top_passers[["Name", "Position", "Passing Yards"]])
+
+                # Rushing
+                if rushing_df is not None:
+                    total_rush_yds, top_rushers = compute_team_stat_totals(
+                        rushing_df,
+                        team_player_ids,
+                        value_col="Rushing Yards",
+                        top_n=5,
+                        label="Rushing Yards",
+                    )
+                    st.metric("Total Rushing Yards", f"{int(total_rush_yds):,}")
+
+                    if top_rushers is not None and not top_rushers.empty:
+                        st.markdown("**Top Rushers**")
+                        st.dataframe(top_rushers[["Name", "Position", "Rushing Yards"]])
+
+            with col_off2:
+                # Receiving
+                if receiving_df is not None:
+                    total_recv_yds, top_receivers = compute_team_stat_totals(
+                        receiving_df,
+                        team_player_ids,
+                        value_col="Receiving Yards",
+                        top_n=5,
+                        label="Receiving Yards",
+                    )
+                    st.metric("Total Receiving Yards", f"{int(total_recv_yds):,}")
+
+                    if top_receivers is not None and not top_receivers.empty:
+                        st.markdown("**Top Receivers**")
+                        st.dataframe(top_receivers[["Name", "Position", "Receiving Yards"]])
+
+                # Defensive tackles
+                if defensive_df is not None:
+                    total_tackles, top_defenders = compute_team_stat_totals(
+                        defensive_df,
+                        team_player_ids,
+                        value_col="Total Tackles",
+                        top_n=5,
+                        label="Total Tackles",
+                    )
+                    st.metric("Total Tackles", f"{int(total_tackles):,}")
+
+                    if top_defenders is not None and not top_defenders.empty:
+                        st.markdown("**Top Tacklers**")
+                        st.dataframe(top_defenders[["Name", "Position", "Total Tackles"]])
+
+            st.write("---")
+
+            # ---------- SPECIAL TEAMS SUMMARY ----------
+            st.markdown("#### Special Teams Summary")
+
+            col_st1, col_st2 = st.columns(2)
+
+            with col_st1:
+                if fg_df is not None:
+                    total_fgs, top_kickers = compute_team_stat_totals(
+                        fg_df,
+                        team_player_ids,
+                        value_col="FGs Made",
+                        top_n=3,
+                        label="FGs Made",
+                    )
+                    st.metric("Field Goals Made", f"{int(total_fgs):,}")
+
+                    if top_kickers is not None and not top_kickers.empty:
+                        st.markdown("**Top Kickers**")
+                        st.dataframe(top_kickers[["Name", "Position", "FGs Made"]])
+
+            with col_st2:
+                if punting_df is not None:
+                    total_punts, top_punters = compute_team_stat_totals(
+                        punting_df,
+                        team_player_ids,
+                        value_col="Punts",
+                        top_n=3,
+                        label="Punts",
+                    )
+                    st.metric("Total Punts", f"{int(total_punts):,}")
+
+                    if top_punters is not None and not top_punters.empty:
+                        st.markdown("**Top Punters**")
+                        st.dataframe(top_punters[["Name", "Position", "Punts"]])
+
 
 
 
@@ -330,7 +669,196 @@ with tab_dist:
         else:
             st.info("No Weight (lbs) column available.")
 
-st.write("---")
+# ----------------------------------------------------------
+# LEAGUE LEADERS TAB
+# ----------------------------------------------------------
+with tab_leaders:
+    st.markdown(
+        "League leaders based on **career totals** or **single-season** stats "
+        "within the current filters."
+    )
+
+    # Career vs Single Season
+    mode = st.radio(
+        "Leaderboard Type",
+        ["Career Totals", "Single Season"],
+        index=0,
+        horizontal=True,
+        key="leaders_mode",
+    )
+
+    selected_year = None
+
+    # If Single Season, pick a season (Year)
+    if mode == "Single Season":
+        year_set = set()
+
+        for df_ in [passing_df, rushing_df, receiving_df, defensive_df, fg_df, punting_df]:
+            if df_ is not None and "Year" in df_.columns:
+                yrs = pd.to_numeric(df_["Year"], errors="coerce").dropna().unique()
+                year_set.update(int(y) for y in yrs)
+
+        if year_set:
+            years_list = sorted(year_set)
+            year_strs = [str(y) for y in years_list]
+            year_choice = st.selectbox(
+                "Season (Year)",
+                year_strs,
+                index=len(year_strs) - 1,
+                key="leaders_year",
+            )
+            selected_year = int(year_choice)
+            st.markdown(f"_Showing leaders for the {selected_year} season._")
+        else:
+            st.info("No 'Year' information available to compute single-season leaders.")
+            mode = "Career Totals"  # fallback to career
+
+    # top N
+    top_n = 10
+
+    col1, col2 = st.columns(2)
+
+    # Helper to pass year when in Single Season mode
+    year_arg = selected_year if mode == "Single Season" else None
+
+    # ---------- PASSING LEADERS ----------
+    with col1:
+        if passing_df is not None:
+            leaders_pass_yds = compute_leaders(
+                passing_df,
+                value_col="Passing Yards",
+                top_n=top_n,
+                label="Passing Yards",
+                year=year_arg,
+            )
+            show_leaderboard(
+                "Passing Yards Leaders",
+                leaders_pass_yds,
+                "Passing Yards",
+            )
+
+        if passing_df is not None:
+            leaders_pass_tds = compute_leaders(
+                passing_df,
+                value_col="TD Passes",
+                top_n=top_n,
+                label="TD Passes",
+                year=year_arg,
+            )
+            show_leaderboard(
+                "Passing TD Leaders",
+                leaders_pass_tds,
+                "TD Passes",
+            )
+
+    # ---------- RUSHING / RECEIVING LEADERS ----------
+    with col2:
+        if rushing_df is not None:
+            leaders_rush_yds = compute_leaders(
+                rushing_df,
+                value_col="Rushing Yards",
+                top_n=top_n,
+                label="Rushing Yards",
+                year=year_arg,
+            )
+            show_leaderboard(
+                "Rushing Yards Leaders",
+                leaders_rush_yds,
+                "Rushing Yards",
+            )
+
+        if receiving_df is not None:
+            leaders_recv_yds = compute_leaders(
+                receiving_df,
+                value_col="Receiving Yards",
+                top_n=top_n,
+                label="Receiving Yards",
+                year=year_arg,
+            )
+            show_leaderboard(
+                "Receiving Yards Leaders",
+                leaders_recv_yds,
+                "Receiving Yards",
+            )
+
+    st.write("---")
+
+    col3, col4 = st.columns(2)
+
+    # ---------- RECEIVING TDs + RUSH TDs ----------
+    with col3:
+        if receiving_df is not None:
+            leaders_recv_tds = compute_leaders(
+                receiving_df,
+                value_col="Receiving TDs",
+                top_n=top_n,
+                label="Receiving TDs",
+                year=year_arg,
+            )
+            show_leaderboard(
+                "Receiving TD Leaders",
+                leaders_recv_tds,
+                "Receiving TDs",
+            )
+
+        if rushing_df is not None:
+            leaders_rush_tds = compute_leaders(
+                rushing_df,
+                value_col="Rushing TDs",
+                top_n=top_n,
+                label="Rushing TDs",
+                year=year_arg,
+            )
+            show_leaderboard(
+                "Rushing TD Leaders",
+                leaders_rush_tds,
+                "Rushing TDs",
+            )
+
+    # ---------- DEFENSE / SPECIAL TEAMS ----------
+    with col4:
+        if defensive_df is not None:
+            leaders_tackles = compute_leaders(
+                defensive_df,
+                value_col="Total Tackles",
+                top_n=top_n,
+                label="Total Tackles",
+                year=year_arg,
+            )
+            show_leaderboard(
+                "Total Tackles Leaders",
+                leaders_tackles,
+                "Total Tackles",
+            )
+
+        if fg_df is not None:
+            leaders_fgs = compute_leaders(
+                fg_df,
+                value_col="FGs Made",
+                top_n=top_n,
+                label="FGs Made",
+                year=year_arg,
+            )
+            show_leaderboard(
+                "Field Goals Made Leaders",
+                leaders_fgs,
+                "FGs Made",
+            )
+
+        if punting_df is not None:
+            leaders_punts = compute_leaders(
+                punting_df,
+                value_col="Punts",
+                top_n=top_n,
+                label="Punts",
+                year=year_arg,
+            )
+            show_leaderboard(
+                "Punting Leaders (Punts)",
+                leaders_punts,
+                "Punts",
+            )
+
 
 # ----------------------------------------------------------
 # PLAYER LOOKUP
@@ -338,17 +866,23 @@ st.write("---")
 st.subheader("Player Lookup")
 
 player_list = sorted(df_filtered["Name"].unique())
-
-# Add a placeholder option at the top
 player_options = ["-- Select a player --"] + player_list
+
+# Determine default index based on session_state (for jump-from-leaders)
+default_index = 0
+if "player_select" in st.session_state:
+    try:
+        default_index = player_options.index(st.session_state["player_select"])
+    except ValueError:
+        default_index = 0
 
 selected_player = st.selectbox(
     "Select a Player",
     player_options,
-    index=0,  # default to the placeholder
+    index=default_index,
+    key="player_select",
 )
 
-# If no real player is selected yet, show a hint and stop the script
 if selected_player == "-- Select a player --":
     st.info("Select a player from the dropdown above to view their profile and stats.")
     st.stop()
@@ -594,7 +1128,7 @@ def show_generic_career_stats(
     st.line_chart(padded_series, use_container_width=True)
 
 # ----------------------------------------------------------
-# GENERIC GAME LOGS SECTION (with season + rolling averages)
+# GENERIC GAME LOGS SECTION (season + context + rolling + heatmap)
 # ----------------------------------------------------------
 def show_generic_game_logs(
     title,
@@ -608,13 +1142,15 @@ def show_generic_game_logs(
     """
     Generic game logs viewer:
       - filters source_df by Player Id
-      - lets user choose a season (Year) if available
+      - optional Season (Year) filter
+      - optional context filters: Home/Away, Opponent, Result/Outcome
       - cleans '--', '-', '' to NaN then 0 for numeric stats
       - sorts games (Year+Week or Game Date if available)
       - adds a 'Game #' index
       - shows full game log table
       - lets user pick a numeric metric to plot vs Game #
       - optional rolling averages (3-game, 5-game)
+      - optional heatmap: metric vs Opponent & Year
     """
     if source_df is None:
         st.info("Game log data is not available for this category.")
@@ -644,7 +1180,9 @@ def show_generic_game_logs(
     if has_week:
         logs["Week"] = pd.to_numeric(logs["Week"], errors="coerce")
 
-    # --- Season (Year) filter, if we have a Year column ---
+    # ------------------------------------------------------
+    # SEASON FILTER (Year)
+    # ------------------------------------------------------
     if has_year:
         years = (
             logs["Year"]
@@ -672,7 +1210,108 @@ def show_generic_game_logs(
                     st.info(f"No game logs found for the {year_int} season.")
                     return
 
-    # --- Sort games after filtering ---
+    # ------------------------------------------------------
+    # CONTEXT FILTERS: LOCATION, OPPONENT, RESULT
+    # ------------------------------------------------------
+    # Detect opponent column
+    opponent_col = None
+    for cand in ["Opponent", "Opp"]:
+        if cand in logs.columns:
+            opponent_col = cand
+            break
+
+    # Detect home/away-like column
+    home_col = None
+    for cand in ["Home or Away", "Location"]:
+        if cand in logs.columns:
+            home_col = cand
+            break
+
+    # Detect result/outcome column
+    result_col = None
+    for cand in ["Result", "Outcome"]:
+        if cand in logs.columns:
+            result_col = cand
+            break
+
+    # Home/Away filter
+    if home_col is not None:
+        loc_values = (
+            logs[home_col]
+            .dropna()
+            .astype(str)
+            .unique()
+            .tolist()
+        )
+        loc_values_sorted = sorted(loc_values)
+        loc_options = ["All Locations"] + loc_values_sorted
+
+        selected_loc = st.selectbox(
+            "Location (Home/Away)",
+            loc_options,
+            index=0,
+            key=f"{key_prefix}_gamelog_location",
+        )
+
+        if selected_loc != "All Locations":
+            logs = logs[logs[home_col].astype(str) == selected_loc].copy()
+            if logs.empty:
+                st.info(f"No games found for location filter: {selected_loc}.")
+                return
+
+    # Opponent filter
+    if opponent_col is not None:
+        opp_values = (
+            logs[opponent_col]
+            .dropna()
+            .astype(str)
+            .unique()
+            .tolist()
+        )
+        opp_values_sorted = sorted(opp_values)
+        opp_options = ["All Opponents"] + opp_values_sorted
+
+        selected_opp = st.selectbox(
+            "Opponent",
+            opp_options,
+            index=0,
+            key=f"{key_prefix}_gamelog_opp",
+        )
+
+        if selected_opp != "All Opponents":
+            logs = logs[logs[opponent_col].astype(str) == selected_opp].copy()
+            if logs.empty:
+                st.info(f"No games found against opponent: {selected_opp}.")
+                return
+
+    # Result filter
+    if result_col is not None:
+        res_values = (
+            logs[result_col]
+            .dropna()
+            .astype(str)
+            .unique()
+            .tolist()
+        )
+        res_values_sorted = sorted(res_values)
+        res_options = ["All Results"] + res_values_sorted
+
+        selected_res = st.selectbox(
+            "Result",
+            res_options,
+            index=0,
+            key=f"{key_prefix}_gamelog_result",
+        )
+
+        if selected_res != "All Results":
+            logs = logs[logs[result_col].astype(str) == selected_res].copy()
+            if logs.empty:
+                st.info(f"No games found with result: {selected_res}.")
+                return
+
+    # ------------------------------------------------------
+    # SORT GAMES
+    # ------------------------------------------------------
     if has_year and has_week:
         logs = logs.sort_values(by=["Year", "Week"])
     elif has_year:
@@ -683,7 +1322,9 @@ def show_generic_game_logs(
     # Add a simple game index for plotting
     logs.insert(0, "Game #", range(1, len(logs) + 1))
 
-    # Identify label columns we *don't* want treated as metrics
+    # ------------------------------------------------------
+    # NUMERIC CONVERSION & TABLE DISPLAY
+    # ------------------------------------------------------
     base_label_cols = [
         id_col,
         "Name",
@@ -722,7 +1363,9 @@ def show_generic_game_logs(
     st.markdown(f"### {title}")
     st.dataframe(logs)
 
-    # Numeric columns for plotting (only within value_cols)
+    # ------------------------------------------------------
+    # METRIC SELECTION + ROLLING AVERAGE LINE CHART
+    # ------------------------------------------------------
     numeric_cols = [
         c for c in value_cols
         if pd.api.types.is_numeric_dtype(logs[c])
@@ -746,13 +1389,12 @@ def show_generic_game_logs(
         key=f"{key_prefix}_gamelog_metric",
     )
 
-    # Build base plot df
     plot_df = logs[["Game #", metric]].dropna()
     if plot_df.empty:
         st.info("No valid values to plot for this metric.")
         return
 
-    # --- Rolling average selector ---
+    # Rolling average selector
     rolling_choice = st.selectbox(
         "Rolling average (games)",
         ["None", "3-game", "5-game"],
@@ -763,11 +1405,7 @@ def show_generic_game_logs(
     plot_df = plot_df.set_index("Game #")
 
     if rolling_choice != "None":
-        if rolling_choice.startswith("3"):
-            window = 3
-        else:
-            window = 5
-
+        window = 3 if rolling_choice.startswith("3") else 5
         roll_col = f"{metric} (Rolling {window})"
         plot_df[roll_col] = (
             plot_df[metric]
@@ -776,7 +1414,6 @@ def show_generic_game_logs(
         )
 
     st.line_chart(plot_df, use_container_width=True)
-
 
 # ----------------------------------------------------------
 # GAME LOG WRAPPERS PER GROUP / POSITION
@@ -877,7 +1514,6 @@ def show_punter_game_logs():
         default_metric_name="Punts",
         key_prefix="punter_logs",
     )
-
 
 # ----------------------------------------------------------
 # SPECIALIZED WRAPPERS: PASSING
