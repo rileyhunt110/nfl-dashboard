@@ -147,6 +147,29 @@ punt_return_df = load_csv(punt_return_path) if punt_return_path.exists() else No
 punting_path = Path("data") / "Career_Stats_Punting.csv"
 punting_df = load_csv(punting_path) if punting_path.exists() else None
 
+# ----------------------------------------------------------
+# LOAD GAME LOGS FILES
+# ----------------------------------------------------------
+qb_logs_path = Path("data") / "Game_Logs_Quarterback.csv"
+qb_logs_df = load_csv(qb_logs_path) if qb_logs_path.exists() else None
+
+rb_logs_path = Path("data") / "Game_Logs_Runningback.csv"
+rb_logs_df = load_csv(rb_logs_path) if rb_logs_path.exists() else None
+
+wrte_logs_path = Path("data") / "Game_Logs_Wide_Receiver_and_Tight_End.csv"
+wrte_logs_df = load_csv(wrte_logs_path) if wrte_logs_path.exists() else None
+
+def_line_logs_path = Path("data") / "Game_Logs_Defensive_Lineman.csv"
+def_line_logs_df = load_csv(def_line_logs_path) if def_line_logs_path.exists() else None
+
+ol_logs_path = Path("data") / "Game_Logs_Offensive_Line.csv"
+ol_logs_df = load_csv(ol_logs_path) if ol_logs_path.exists() else None
+
+kicker_logs_path = Path("data") / "Game_Logs_Kickers.csv"
+kicker_logs_df = load_csv(kicker_logs_path) if kicker_logs_path.exists() else None
+
+punter_logs_path = Path("data") / "Game_Logs_Punters.csv"
+punter_logs_df = load_csv(punter_logs_path) if punter_logs_path.exists() else None
 
 # ----------------------------------------------------------
 # TITLE
@@ -569,6 +592,291 @@ def show_generic_career_stats(
         padded_series = plot_df.set_index(year_col)[metric].clip(y_min_adj, y_max_adj)
 
     st.line_chart(padded_series, use_container_width=True)
+
+# ----------------------------------------------------------
+# GENERIC GAME LOGS SECTION (with season + rolling averages)
+# ----------------------------------------------------------
+def show_generic_game_logs(
+    title,
+    source_df,
+    player_data_row,
+    id_col="Player Id",
+    drop_label_cols=None,
+    default_metric_name=None,
+    key_prefix="",
+):
+    """
+    Generic game logs viewer:
+      - filters source_df by Player Id
+      - lets user choose a season (Year) if available
+      - cleans '--', '-', '' to NaN then 0 for numeric stats
+      - sorts games (Year+Week or Game Date if available)
+      - adds a 'Game #' index
+      - shows full game log table
+      - lets user pick a numeric metric to plot vs Game #
+      - optional rolling averages (3-game, 5-game)
+    """
+    if source_df is None:
+        st.info("Game log data is not available for this category.")
+        return
+
+    if id_col not in source_df.columns:
+        st.info(f"Game logs are missing '{id_col}' column.")
+        return
+
+    player_id = player_data_row[id_col]
+    logs = source_df[source_df[id_col] == player_id].copy()
+
+    if logs.empty:
+        st.info("No game logs found for this player in this category.")
+        return
+
+    # Replace common "no data" placeholders
+    logs = logs.replace({"--": np.nan, "-": np.nan, "": np.nan})
+
+    # --- Coerce Year/Week if present (for sorting + filtering) ---
+    has_year = "Year" in logs.columns
+    has_week = "Week" in logs.columns
+
+    if has_year:
+        logs["Year"] = pd.to_numeric(logs["Year"], errors="coerce")
+
+    if has_week:
+        logs["Week"] = pd.to_numeric(logs["Week"], errors="coerce")
+
+    # --- Season (Year) filter, if we have a Year column ---
+    if has_year:
+        years = (
+            logs["Year"]
+            .dropna()
+            .astype(int)
+            .sort_values()
+            .unique()
+            .tolist()
+        )
+
+        if years:
+            year_options = ["All Seasons"] + [str(y) for y in years]
+            selected_year = st.selectbox(
+                "Season (Year)",
+                year_options,
+                index=0,
+                key=f"{key_prefix}_gamelog_year",
+            )
+
+            if selected_year != "All Seasons":
+                year_int = int(selected_year)
+                logs = logs[logs["Year"] == year_int].copy()
+
+                if logs.empty:
+                    st.info(f"No game logs found for the {year_int} season.")
+                    return
+
+    # --- Sort games after filtering ---
+    if has_year and has_week:
+        logs = logs.sort_values(by=["Year", "Week"])
+    elif has_year:
+        logs = logs.sort_values(by="Year")
+    elif "Game Date" in logs.columns:
+        logs = logs.sort_values(by="Game Date")
+
+    # Add a simple game index for plotting
+    logs.insert(0, "Game #", range(1, len(logs) + 1))
+
+    # Identify label columns we *don't* want treated as metrics
+    base_label_cols = [
+        id_col,
+        "Name",
+        "Position",
+        "Team",
+        "Opponent",
+        "Opp",
+        "Game Date",
+        "Date",
+        "Home or Away",
+        "Location",
+        "Result",
+        "Outcome",
+        "Season",
+        "Week",
+        "Year",
+    ]
+    if drop_label_cols:
+        base_label_cols.extend(drop_label_cols)
+
+    label_cols = [c for c in base_label_cols if c in logs.columns]
+
+    # Convert value columns (everything else except labels + Game #) to numeric
+    value_cols = [
+        c for c in logs.columns
+        if c not in label_cols + ["Game #"]
+    ]
+
+    for col in value_cols:
+        logs[col] = pd.to_numeric(logs[col], errors="coerce")
+
+    # Fill NaNs in numeric with 0 for display
+    if value_cols:
+        logs[value_cols] = logs[value_cols].fillna(0)
+
+    st.markdown(f"### {title}")
+    st.dataframe(logs)
+
+    # Numeric columns for plotting (only within value_cols)
+    numeric_cols = [
+        c for c in value_cols
+        if pd.api.types.is_numeric_dtype(logs[c])
+    ]
+
+    if not numeric_cols:
+        st.info("No numeric stats available to plot from these game logs.")
+        return
+
+    st.markdown("#### Plot a Game Log Metric Over Time")
+
+    if default_metric_name and default_metric_name in numeric_cols:
+        default_metric = default_metric_name
+    else:
+        default_metric = numeric_cols[0]
+
+    metric = st.selectbox(
+        "Select metric",
+        options=numeric_cols,
+        index=numeric_cols.index(default_metric),
+        key=f"{key_prefix}_gamelog_metric",
+    )
+
+    # Build base plot df
+    plot_df = logs[["Game #", metric]].dropna()
+    if plot_df.empty:
+        st.info("No valid values to plot for this metric.")
+        return
+
+    # --- Rolling average selector ---
+    rolling_choice = st.selectbox(
+        "Rolling average (games)",
+        ["None", "3-game", "5-game"],
+        index=0,
+        key=f"{key_prefix}_gamelog_roll",
+    )
+
+    plot_df = plot_df.set_index("Game #")
+
+    if rolling_choice != "None":
+        if rolling_choice.startswith("3"):
+            window = 3
+        else:
+            window = 5
+
+        roll_col = f"{metric} (Rolling {window})"
+        plot_df[roll_col] = (
+            plot_df[metric]
+            .rolling(window=window, min_periods=1)
+            .mean()
+        )
+
+    st.line_chart(plot_df, use_container_width=True)
+
+
+# ----------------------------------------------------------
+# GAME LOG WRAPPERS PER GROUP / POSITION
+# ----------------------------------------------------------
+def show_qb_game_logs():
+    if qb_logs_df is None:
+        st.info("Quarterback game logs file is not available.")
+        return
+
+    show_generic_game_logs(
+        title="Quarterback Game Logs",
+        source_df=qb_logs_df,
+        player_data_row=player_data,
+        default_metric_name="Passing Yards",
+        key_prefix="qb_logs",
+    )
+
+
+def show_rb_game_logs():
+    if rb_logs_df is None:
+        st.info("Running back game logs file is not available.")
+        return
+
+    show_generic_game_logs(
+        title="Running Back Game Logs",
+        source_df=rb_logs_df,
+        player_data_row=player_data,
+        default_metric_name="Rushing Yards",
+        key_prefix="rb_logs",
+    )
+
+
+def show_wrte_game_logs():
+    if wrte_logs_df is None:
+        st.info("WR/TE game logs file is not available.")
+        return
+
+    show_generic_game_logs(
+        title="Wide Receiver / Tight End Game Logs",
+        source_df=wrte_logs_df,
+        player_data_row=player_data,
+        default_metric_name="Receiving Yards",
+        key_prefix="wrte_logs",
+    )
+
+
+def show_def_line_game_logs():
+    if def_line_logs_df is None:
+        st.info("Defensive line game logs file is not available.")
+        return
+
+    show_generic_game_logs(
+        title="Defensive Lineman Game Logs",
+        source_df=def_line_logs_df,
+        player_data_row=player_data,
+        default_metric_name="Total Tackles",
+        key_prefix="defline_logs",
+    )
+
+
+def show_ol_game_logs():
+    if ol_logs_df is None:
+        st.info("Offensive line game logs file is not available.")
+        return
+
+    show_generic_game_logs(
+        title="Offensive Line Game Logs",
+        source_df=ol_logs_df,
+        player_data_row=player_data,
+        default_metric_name="Games Played",
+        key_prefix="ol_logs",
+    )
+
+
+def show_kicker_game_logs():
+    if kicker_logs_df is None:
+        st.info("Kicker game logs file is not available.")
+        return
+
+    show_generic_game_logs(
+        title="Kicker Game Logs",
+        source_df=kicker_logs_df,
+        player_data_row=player_data,
+        default_metric_name="FGs Made",  # falls back if not present
+        key_prefix="kicker_logs",
+    )
+
+
+def show_punter_game_logs():
+    if punter_logs_df is None:
+        st.info("Punter game logs file is not available.")
+        return
+
+    show_generic_game_logs(
+        title="Punter Game Logs",
+        source_df=punter_logs_df,
+        player_data_row=player_data,
+        default_metric_name="Punts",
+        key_prefix="punter_logs",
+    )
 
 
 # ----------------------------------------------------------
@@ -1631,23 +1939,23 @@ if player_data_compare is not None:
 # ----------------------------------------------------------
 # TABS FOR STATS
 # ----------------------------------------------------------
-tab_offense, tab_defense, tab_special = st.tabs(
-    ["Offense", "Defense", "Special Teams"]
+tab_offense, tab_defense, tab_special, tab_logs = st.tabs(
+    ["Offense", "Defense", "Special Teams", "Game Logs"]
 )
 
 pos = str(player_data["Position"]).upper()
 
 if pos.startswith("QB"):
-    # Quarterbacks → Passing, then Rushing, then Receiving
     with tab_offense:
         show_passing_stats()
         show_rushing_stats()
         show_off_receiving_stats()
     with tab_defense:
         show_off_defensive_stats()
+    with tab_logs:
+        show_qb_game_logs()
 
 elif pos.startswith(("RB", "HB", "FB")):
-    # Backs → Rushing, then Receiving, then Passing
     with tab_offense:
         show_rushing_stats()
         show_receiving_stats()
@@ -1656,9 +1964,10 @@ elif pos.startswith(("RB", "HB", "FB")):
         show_punt_return_stats()
     with tab_defense:
         show_off_defensive_stats()
+    with tab_logs:
+        show_rb_game_logs()
 
 elif pos.startswith(("WR", "TE")):
-    # Receivers → Receiving, then Rushing, then Passing
     with tab_offense:
         show_receiving_stats()
         show_off_rushing_stats()
@@ -1668,33 +1977,38 @@ elif pos.startswith(("WR", "TE")):
         show_punt_return_stats()
     with tab_defense:
         show_off_defensive_stats()
+    with tab_logs:
+        show_wrte_game_logs()
 
 elif pos.startswith(("G", "OG", "OL")):
-        # Everyone else → default order, but still see the big 3 if they have data
     with tab_offense:
         show_offensive_line_stats()
         show_off_rushing_stats()
         show_off_receiving_stats()
     with tab_defense:
         show_off_defensive_stats()
+    with tab_logs:
+        show_ol_game_logs()
 
 elif pos.startswith(("OT", "T")):
-    # Everyone else → default order, but still see the big 3 if they have data
     with tab_offense:
         show_offensive_line_stats()
         show_off_rushing_stats()
         show_off_receiving_stats()
     with tab_defense:
         show_off_defensive_stats()
+    with tab_logs:
+        show_ol_game_logs()
 
 elif pos.startswith(("LS", "C")):
-    # Everyone else → default order, but still see the big 3 if they have data
     with tab_offense:
         show_offensive_line_stats()
         show_off_rushing_stats()
         show_off_receiving_stats()
     with tab_defense:
         show_off_defensive_stats()
+    with tab_logs:
+        show_ol_game_logs()
     
 if pos.startswith(("K")):
     with tab_special:
@@ -1705,6 +2019,8 @@ if pos.startswith(("K")):
         show_off_defensive_stats()
     with tab_offense:
         show_off_passing_stats()
+    with tab_logs:
+        show_kicker_game_logs()
 
 elif pos.startswith(("P")):
     with tab_special:
@@ -1716,6 +2032,8 @@ elif pos.startswith(("P")):
         show_off_passing_stats()
     with tab_defense:
         show_off_defensive_stats()
+    with tab_logs:
+        show_punter_game_logs()
 
 if pos.startswith(("CB", "DB", "FS")):
     with tab_defense:
@@ -1733,6 +2051,30 @@ elif pos.startswith(("SS", "SAF")):
         show_kick_return_stats()
         show_punt_return_stats()
     with tab_offense:
+        show_off_receiving_stats()
+
+if pos.startswith(("DE", "DL", "DT")):
+    with tab_defense:
+        show_off_defensive_stats()
+    with tab_offense:
+        show_offensive_line_stats()
+        show_off_rushing_stats()
+        show_off_receiving_stats()
+
+if pos.startswith(("ILB", "LB", "MLB")):
+    with tab_defense:
+        show_off_defensive_stats()
+    with tab_offense:
+        show_offensive_line_stats()
+        show_off_rushing_stats()
+        show_off_receiving_stats()
+
+if pos.startswith(("NT","OLB")):
+    with tab_defense:
+        show_off_defensive_stats()
+    with tab_offense:
+        show_offensive_line_stats()
+        show_off_rushing_stats()
         show_off_receiving_stats()
 
 # ----------------------------------------------------------
