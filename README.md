@@ -12,9 +12,9 @@ The dashboard provides a rich environment for exploring NFL player data, includi
 
 Filter players by:
 
-Team
+* Team
 
-Position
+* Position
 
 All views update dynamically based on the filters selected.
 
