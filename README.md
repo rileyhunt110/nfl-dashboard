@@ -111,22 +111,21 @@ Players
 |age	|Age|
 |college	|College attended|
 
-
 SeasonStats
-
 Per-player, per-season statistics:
+|Column	|Description|
+|---|---|
+|player_id	|Foreign key to Players|
+|season	|Season year|
+|team	|Player's team that year|
+|passing_yards	|Total passing yards|
+|rushing_yards	|Total rushing yards|
+|receiving_yards	|Receiving yards|
+|tackles	|Total tackles|
+|sacks	|Total sacks|
+|interceptions	|Interceptions made|
+|...	|(other stat columns)|
 
-Column	Description
-player_id	Foreign key to Players
-season	Season year
-team	Player's team that year
-passing_yards	Total passing yards
-rushing_yards	Total rushing yards
-receiving_yards	Receiving yards
-tackles	Total tackles
-sacks	Total sacks
-interceptions	Interceptions made
-...	(other stat columns)
 Career Aggregations
 
 Computed within the app by grouping season stats.
@@ -144,14 +143,17 @@ Used to compute nearest neighbors
 This demonstrates structured thinking in schema design and analytical modeling.
 
 ⚙️ Tech Stack
-Technology	Purpose
-Python	Core programming
-Streamlit	Web application framework
-Pandas	Data loading & manipulation
-NumPy	Numeric operations
-Altair	Visualization
-scikit-learn	Similarity modeling (scaling + nearest neighbor search)
+|Technology	|Purpose|
+|---|---|
+|Python	|Core programming|
+|Streamlit	|Web application framework|
+|Pandas	|Data loading & manipulation|
+|NumPy	|Numeric operations|
+|Altair	|Visualization|
+|scikit-learn	|Similarity modeling (scaling + nearest neighbor search)|
+
 📁 Project Structure
+```bash
 project/
 │
 ├── data/
@@ -164,6 +166,7 @@ project/
 ├── app.py
 ├── requirements.txt
 └── README.md
+```
 
 🚀 Getting Started
 1. Clone the repository
