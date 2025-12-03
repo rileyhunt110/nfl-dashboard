@@ -1,14 +1,14 @@
-🏈 NFL Player Analytics Dashboard
+NFL Player Analytics Dashboard
 
 An interactive Streamlit dashboard for exploring NFL player statistics, league leaders, team summaries, and player similarity across multiple positions and seasons.
 
 This project showcases skills in data analysis, feature engineering, interactive dashboard creation, and analytical storytelling. It also demonstrates how to structure multi-table sports data for real-world analytics workflows.
 
-🔍 Overview
+Overview
 
 The dashboard provides a rich environment for exploring NFL player data, including:
 
-✔ Global Player Filters
+Global Player Filters
 
 Filter players by:
 
@@ -18,7 +18,7 @@ Filter players by:
 
 All views update dynamically based on the filters selected.
 
-✔ Summary Metrics
+Summary Metrics
 
 At a glance:
 
@@ -30,7 +30,7 @@ At a glance:
 
 * Average weight
 
-✔ Multiple Analytical Views
+Multiple Analytical Views
 1. Positions Overview
 
 * Bar chart showing number of players per position
@@ -95,7 +95,7 @@ Search any player and view:
 
 * Multi-metric similarity across several performance groups
 
-🧱 Data Model (Conceptual)
+Data Model (Conceptual)
 
 Even though the app reads CSV files from the data/ folder, the underlying structure is equivalent to this relational model:
 
@@ -142,7 +142,7 @@ Numeric stat features (passing, rushing, receiving, defense) are:
 
 This demonstrates structured thinking in schema design and analytical modeling.
 
-⚙️ Tech Stack
+Tech Stack
 |Technology	|Purpose|
 |---|---|
 |Python	|Core programming|
@@ -152,7 +152,7 @@ This demonstrates structured thinking in schema design and analytical modeling.
 |Altair	|Visualization|
 |scikit-learn	|Similarity modeling (scaling + nearest neighbor search)|
 
-📁 Project Structure
+Project Structure
 ```bash
 project/
 │
@@ -168,7 +168,7 @@ project/
 └── README.md
 ```
 
-🚀 Getting Started
+Getting Started
 1. Clone the repository
 git clone https://github.com/<your-username>/nfl-dashboard.git
 cd nfl-dashboard
