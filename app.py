@@ -3,10 +3,6 @@ import pandas as pd
 import numpy as np
 import altair as alt
 from pathlib import Path
-from sklearn.preprocessing import StandardScaler
-from sklearn.neighbors import NearestNeighbors
-from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans
 
 # ----------------------------------------------------------
 # PAGE CONFIG
@@ -76,53 +72,6 @@ def clean_age_column(series):
             cleaned.append(np.nan)
 
     return pd.Series(cleaned)
-
-# ----------------------------------------------------------
-# POSITION GROUPING (for smarter similarity)
-# ----------------------------------------------------------
-def position_group(pos_raw: str) -> str:
-    if not isinstance(pos_raw, str):
-        return "OTHER"
-    pos = pos_raw.upper().strip()
-
-    # Quarterbacks
-    if pos.startswith("QB"):
-        return "QB"
-
-    # Running backs / fullbacks
-    if pos.startswith(("RB", "HB", "FB")):
-        return "RB"
-
-    # Wide receivers / tight ends
-    if pos.startswith(("WR", "TE", "SE", "FL")):
-        return "WRTE"
-
-    # Offensive line
-    if pos in {"C", "G", "OG", "OT", "T", "LT", "RT", "OL"}:
-        return "OL"
-
-    # Defensive line
-    if pos in {"DE", "DL", "DT", "NT"}:
-        return "DL"
-
-    # Linebackers
-    if pos in {"LB", "MLB", "ILB", "OLB"}:
-        return "LB"
-
-    # Defensive backs
-    if pos in {"CB", "DB", "FS", "SS", "SAF"}:
-        return "DB"
-
-    # Specialists
-    if pos.startswith("K"):
-        return "K"
-    if pos.startswith("P"):
-        return "P"
-    if pos in {"KR", "PR"}:
-        return "RET"
-
-    return "OTHER"
-
 
 # LEAGUE LEADERS HELPERS
 def compute_leaders(
@@ -401,691 +350,6 @@ kicker_logs_df = load_csv(kicker_logs_path) if kicker_logs_path.exists() else No
 punter_logs_path = Path("data") / "Game_Logs_Punters.csv"
 punter_logs_df = load_csv(punter_logs_path) if punter_logs_path.exists() else None
 
-@st.cache
-def build_cluster_feature_df():
-    """
-    Build a per-player career feature matrix for clustering.
-    Uses totals from passing, rushing, receiving, defense, returns, kicking, punting.
-    """
-    if "Player Id" not in df.columns:
-        return pd.DataFrame(), []
-
-    rows = []
-
-    for _, row in df.iterrows():
-        pid = row["Player Id"]
-        name = row.get("Name", "")
-        pos = row.get("Position", "")
-        team = row.get("Current Team", "")
-
-        # Base feature dict
-        feats = {
-            "Player Id": pid,
-            "Name": name,
-            "Position": pos,
-            "Current Team": team,
-            # Offense
-            "PassYds": 0.0,
-            "PassTD": 0.0,
-            "IntThrown": 0.0,
-            "RushYds": 0.0,
-            "RushTD": 0.0,
-            "RecYds": 0.0,
-            "RecTD": 0.0,
-            # Defense
-            "Tackles": 0.0,
-            "Sacks": 0.0,
-            "DefInts": 0.0,
-            # Special teams
-            "FGMade": 0.0,
-            "XPMade": 0.0,
-            "Punts": 0.0,
-            "PuntYds": 0.0,
-            "KR_Yds": 0.0,
-            "PR_Yds": 0.0,
-        }
-
-        # ----- Passing -----
-        if passing_df is not None and "Player Id" in passing_df.columns:
-            p = passing_df[passing_df["Player Id"] == pid].copy()
-            if not p.empty:
-                if "Passing Yards" in p.columns:
-                    p["Passing Yards"] = (
-                        p["Passing Yards"].astype(str).str.replace(",", "", regex=False)
-                    )
-                    feats["PassYds"] = pd.to_numeric(
-                        p["Passing Yards"], errors="coerce"
-                    ).fillna(0).sum()
-
-                if "TD Passes" in p.columns:
-                    feats["PassTD"] = pd.to_numeric(
-                        p["TD Passes"], errors="coerce"
-                    ).fillna(0).sum()
-
-                if "Ints" in p.columns:
-                    feats["IntThrown"] = pd.to_numeric(
-                        p["Ints"], errors="coerce"
-                    ).fillna(0).sum()
-
-        # ----- Rushing -----
-        if rushing_df is not None and "Player Id" in rushing_df.columns:
-            r = rushing_df[rushing_df["Player Id"] == pid].copy()
-            if not r.empty:
-                if "Rushing Yards" in r.columns:
-                    r["Rushing Yards"] = (
-                        r["Rushing Yards"].astype(str).str.replace(",", "", regex=False)
-                    )
-                    feats["RushYds"] = pd.to_numeric(
-                        r["Rushing Yards"], errors="coerce"
-                    ).fillna(0).sum()
-
-                if "Rushing TDs" in r.columns:
-                    feats["RushTD"] = pd.to_numeric(
-                        r["Rushing TDs"], errors="coerce"
-                    ).fillna(0).sum()
-
-        # ----- Receiving -----
-        if receiving_df is not None and "Player Id" in receiving_df.columns:
-            rec = receiving_df[receiving_df["Player Id"] == pid].copy()
-            if not rec.empty:
-                if "Receiving Yards" in rec.columns:
-                    rec["Receiving Yards"] = (
-                        rec["Receiving Yards"].astype(str).str.replace(",", "", regex=False)
-                    )
-                    feats["RecYds"] = pd.to_numeric(
-                        rec["Receiving Yards"], errors="coerce"
-                    ).fillna(0).sum()
-
-                if "Receiving TDs" in rec.columns:
-                    feats["RecTD"] = pd.to_numeric(
-                        rec["Receiving TDs"], errors="coerce"
-                    ).fillna(0).sum()
-
-        # ----- Defense -----
-        if defensive_df is not None and "Player Id" in defensive_df.columns:
-            d = defensive_df[defensive_df["Player Id"] == pid].copy()
-            if not d.empty:
-                if "Total Tackles" in d.columns:
-                    feats["Tackles"] = pd.to_numeric(
-                        d["Total Tackles"], errors="coerce"
-                    ).fillna(0).sum()
-
-                if "Sacks" in d.columns:
-                    feats["Sacks"] = pd.to_numeric(
-                        d["Sacks"], errors="coerce"
-                    ).fillna(0).sum()
-
-                if "Ints" in d.columns:
-                    feats["DefInts"] = pd.to_numeric(
-                        d["Ints"], errors="coerce"
-                    ).fillna(0).sum()
-
-        # ----- Kick Return -----
-        if kick_return_df is not None and "Player Id" in kick_return_df.columns:
-            kr = kick_return_df[kick_return_df["Player Id"] == pid].copy()
-            if not kr.empty and "Yards Returned" in kr.columns:
-                kr["Yards Returned"] = (
-                    kr["Yards Returned"].astype(str).str.replace(",", "", regex=False)
-                )
-                feats["KR_Yds"] = pd.to_numeric(
-                    kr["Yards Returned"], errors="coerce"
-                ).fillna(0).sum()
-
-        # ----- Punt Return -----
-        if punt_return_df is not None and "Player Id" in punt_return_df.columns:
-            pr = punt_return_df[punt_return_df["Player Id"] == pid].copy()
-            if not pr.empty and "Yards Returned" in pr.columns:
-                pr["Yards Returned"] = (
-                    pr["Yards Returned"].astype(str).str.replace(",", "", regex=False)
-                )
-                feats["PR_Yds"] = pd.to_numeric(
-                    pr["Yards Returned"], errors="coerce"
-                ).fillna(0).sum()
-
-        # ----- Kicking -----
-        if fg_df is not None and "Player Id" in fg_df.columns:
-            k = fg_df[fg_df["Player Id"] == pid].copy()
-            if not k.empty:
-                if "FGs Made" in k.columns:
-                    feats["FGMade"] = pd.to_numeric(
-                        k["FGs Made"], errors="coerce"
-                    ).fillna(0).sum()
-
-                if "Extra Points Made" in k.columns:
-                    feats["XPMade"] = pd.to_numeric(
-                        k["Extra Points Made"], errors="coerce"
-                    ).fillna(0).sum()
-
-        # ----- Punting -----
-        if punting_df is not None and "Player Id" in punting_df.columns:
-            pnt = punting_df[punting_df["Player Id"] == pid].copy()
-            if not pnt.empty:
-                if "Punts" in pnt.columns:
-                    feats["Punts"] = pd.to_numeric(
-                        pnt["Punts"], errors="coerce"
-                    ).fillna(0).sum()
-
-                if "Gross Punting Yards" in pnt.columns:
-                    pnt["Gross Punting Yards"] = (
-                        pnt["Gross Punting Yards"].astype(str).str.replace(",", "", regex=False)
-                    )
-                    feats["PuntYds"] = pd.to_numeric(
-                        pnt["Gross Punting Yards"], errors="coerce"
-                    ).fillna(0).sum()
-
-        rows.append(feats)
-
-    feature_df = pd.DataFrame(rows)
-
-    # Ensure numeric types
-    feature_cols = [
-        "PassYds", "PassTD", "IntThrown",
-        "RushYds", "RushTD",
-        "RecYds", "RecTD",
-        "Tackles", "Sacks", "DefInts",
-        "FGMade", "XPMade",
-        "Punts", "PuntYds",
-        "KR_Yds", "PR_Yds",
-    ]
-
-    for c in feature_cols:
-        if c in feature_df.columns:
-            feature_df[c] = pd.to_numeric(feature_df[c], errors="coerce").fillna(0.0)
-        else:
-            feature_df[c] = 0.0
-
-    return feature_df, feature_cols
-
-def get_feature_group_cols_for_similarity(all_feature_cols, feature_group: str):
-    """Return the subset of feature columns for a given feature group."""
-    if feature_group == "Offense":
-        cols = [
-            "PassYds", "PassTD", "IntThrown",
-            "RushYds", "RushTD",
-            "RecYds", "RecTD",
-        ]
-    elif feature_group == "Defense":
-        cols = ["Tackles", "Sacks", "DefInts"]
-    elif feature_group == "Special Teams":
-        cols = ["FGMade", "XPMade", "Punts", "PuntYds", "KR_Yds", "PR_Yds"]
-    else:  # "All"
-        cols = all_feature_cols
-
-    # Only keep those that actually exist
-    return [c for c in cols if c in all_feature_cols]
-
-@st.cache
-def build_similarity_index(feature_group: str = "All"):
-    """
-    Build a similarity index (StandardScaler + NearestNeighbors) for the chosen feature group.
-    Returns:
-      - feature_df: DataFrame with Player Id, Name, Position, Current Team and features
-      - feature_cols: numeric feature columns actually used
-      - scaler: fitted StandardScaler
-      - nn: fitted NearestNeighbors model
-    """
-    feature_df, all_feature_cols = build_cluster_feature_df()
-    if feature_df.empty:
-        return feature_df, [], None, None
-
-    feature_cols = get_feature_group_cols_for_similarity(all_feature_cols, feature_group)
-    if not feature_cols:
-        return feature_df, [], None, None
-
-    X = feature_df[feature_cols].to_numpy()
-
-    # Filter out players with all-zero stats for this feature group
-    non_zero_mask = (X.sum(axis=1) != 0)
-    feature_df = feature_df[non_zero_mask].reset_index(drop=True)
-    X = X[non_zero_mask]
-
-    if feature_df.shape[0] < 2:
-        return feature_df, feature_cols, None, None
-
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
-    nn = NearestNeighbors(metric="cosine")
-    nn.fit(X_scaled)
-
-    return feature_df, feature_cols, scaler, nn
-
-def get_similar_players(player_row, feature_group: str = "All", n_neighbors: int = 8):
-    """
-    Given a player (basic stats row), return a DataFrame of most similar players
-    based on career stats in the chosen feature group.
-    """
-    if "Player Id" not in player_row:
-        return None
-
-    feature_df, feature_cols, scaler, nn = build_similarity_index(feature_group)
-
-    if not feature_cols or scaler is None or nn is None or feature_df.empty:
-        return None
-
-    pid = player_row["Player Id"]
-    if pid not in set(feature_df["Player Id"]):
-        return None
-
-    # Index of this player in feature_df
-    idx_list = feature_df.index[feature_df["Player Id"] == pid].tolist()
-    if not idx_list:
-        return None
-    idx = idx_list[0]
-
-    # Vector for this player
-    x = feature_df.loc[[idx], feature_cols].to_numpy()
-    x_scaled = scaler.transform(x)
-
-    # Ask for one extra neighbor (we'll drop the player themself)
-    k = min(n_neighbors + 1, feature_df.shape[0])
-    distances, indices = nn.kneighbors(x_scaled, n_neighbors=k)
-    distances = distances[0]
-    indices = indices[0]
-
-    rows = []
-    for dist, i in zip(distances, indices):
-        if i == idx:
-            # Skip the player themself
-            continue
-
-        row = feature_df.iloc[i]
-        sim = 1.0 - float(dist)  # cosine similarity ≈ 1 - distance
-        if sim < 0:
-            sim = 0.0
-
-        rows.append(
-            {
-                "Name": row.get("Name", ""),
-                "Position": row.get("Position", ""),
-                "Current Team": row.get("Current Team", ""),
-                "Similarity": round(sim, 3),
-            }
-        )
-
-        if len(rows) >= n_neighbors:
-            break
-
-    if not rows:
-        return None
-
-    sim_df = pd.DataFrame(rows)
-    sim_df = sim_df.sort_values(by="Similarity", ascending=False)
-
-    return sim_df
-
-
-# ----------------------------------------------------------
-# PLAYER SIMILARITY MODEL
-# ----------------------------------------------------------
-@st.cache(allow_output_mutation=True)
-def build_player_similarity_models():
-    """
-    Build:
-      - player_meta: basic info per player (index = Player Id)
-      - features: numeric feature matrix (index = Player Id)
-      - scaler: StandardScaler fitted on features
-      - knn: NearestNeighbors model fitted on scaled features
-    """
-    # Basic player metadata
-    player_meta = (
-        df[["Player Id", "Name", "Position", "Current Team"]]
-        .dropna(subset=["Player Id"])
-        .drop_duplicates(subset=["Player Id"])
-        .set_index("Player Id")
-    )
-
-    # Add position group for smarter similarity
-    player_meta["PosGroup"] = player_meta["Position"].astype(str).apply(position_group)
-
-    # Start features as just metadata index, no numeric cols yet
-    feats = player_meta.copy()
-
-    # Helper: add aggregated stats from a stats DF
-    def add_stats(stat_df, prefix=""):
-        nonlocal feats
-        if stat_df is None or "Player Id" not in stat_df.columns:
-            return
-
-        temp = stat_df.copy()
-
-        # Clean numeric-like text
-        for col in temp.columns:
-            if col not in ["Player Id", "Name", "Position", "Team", "Year"]:
-                if temp[col].dtype == object:
-                    temp[col] = (
-                        temp[col]
-                        .astype(str)
-                        .str.replace(",", "", regex=False)
-                        .str.replace("T", "", regex=False)
-                    )
-                temp[col] = pd.to_numeric(temp[col], errors="coerce")
-
-        # Group by player across all seasons
-        numeric_cols = [
-            c
-            for c in temp.columns
-            if c not in ["Player Id", "Name", "Position", "Team", "Year"]
-        ]
-        if not numeric_cols:
-            return
-
-        agg = (
-            temp[["Player Id"] + numeric_cols]
-            .groupby("Player Id", as_index=True)
-            .sum()
-        )
-
-        # Prefix numeric columns
-        agg = agg.add_prefix(prefix)
-
-        # Align indices to feats (all players)
-        agg = agg.reindex(feats.index, fill_value=0)
-
-        # Add / overwrite columns in feats
-        for col in agg.columns:
-            feats[col] = agg[col]
-
-    # Add features from every stat file
-    add_stats(passing_df, prefix="pass_")
-    add_stats(rushing_df, prefix="rush_")
-    add_stats(receiving_df, prefix="recv_")
-    add_stats(defensive_df, prefix="def_")
-    add_stats(fg_df, prefix="fg_")
-    add_stats(kick_return_df, prefix="kr_")
-    add_stats(punt_return_df, prefix="pr_")
-    add_stats(punting_df, prefix="punt_")
-    add_stats(kickoff_df, prefix="ko_")
-
-    # Extract numeric feature matrix ONLY (drop name/position/etc)
-    features = feats.select_dtypes(include=["number"])
-
-    # If no numeric features, bail gracefully
-    if features.empty or features.shape[1] == 0:
-        return player_meta, features, None, None
-
-    # Scale features
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(features.values)
-
-    # Use more neighbors internally so we can filter by position group
-    n_samples = features.shape[0]
-    n_neighbors = min(max(10, 30), n_samples)  # between 10 and 30, but ≤ n_samples
-
-    knn = NearestNeighbors(n_neighbors=n_neighbors, metric="euclidean")
-    knn.fit(X_scaled)
-
-    return player_meta, features, scaler, knn
-
-
-# Build similarity structures once
-player_meta, player_features, similarity_scaler, similarity_knn = build_player_similarity_models()
-
-
-def find_similar_players(player_id, top_k=5):
-    """
-    Given a Player Id, return up to top_k most similar players.
-    Similarity is:
-      - computed in numeric feature space
-      - filtered to same position group when possible
-    """
-    # If model didn't build (no numeric features), just bail
-    if similarity_knn is None or similarity_scaler is None:
-        return None
-
-    if player_id not in player_features.index:
-        return None
-
-    # Get pos group for this player
-    pos_group = None
-    if player_id in player_meta.index and "PosGroup" in player_meta.columns:
-        pos_group = player_meta.loc[player_id, "PosGroup"]
-
-    # Feature vector for this player
-    vec = player_features.loc[player_id].values.reshape(1, -1)
-    vec_scaled = similarity_scaler.transform(vec)
-
-    # Query nearest neighbors
-    distances, indices = similarity_knn.kneighbors(vec_scaled)
-
-    distances = distances[0]
-    indices = indices[0]
-
-    id_list = player_features.index.to_list()
-
-    similar = []
-
-    # First pass: same position group only (if pos_group known)
-    for dist, idx in zip(distances, indices):
-        if idx < 0 or idx >= len(id_list):
-            continue
-
-        pid = id_list[idx]
-        if pid == player_id:
-            continue
-
-        if pos_group is not None:
-            # Skip different groups in first pass
-            if pid not in player_meta.index:
-                continue
-            if player_meta.loc[pid, "PosGroup"] != pos_group:
-                continue
-
-        meta_row = player_meta.loc[pid]
-        similar.append(
-            {
-                "Player Id": pid,
-                "Name": meta_row["Name"],
-                "Position": meta_row["Position"],
-                "Team": meta_row["Current Team"],
-                "PosGroup": meta_row["PosGroup"],
-                "Distance": float(dist),
-            }
-        )
-
-        if len(similar) >= top_k:
-            break
-
-    # If we didn't get enough from same group, fill with closest others
-    if len(similar) < top_k:
-        for dist, idx in zip(distances, indices):
-            if idx < 0 or idx >= len(id_list):
-                continue
-
-            pid = id_list[idx]
-            if pid == player_id:
-                continue
-
-            # Skip if already added
-            if any(s["Player Id"] == pid for s in similar):
-                continue
-
-            if pid not in player_meta.index:
-                continue
-
-            meta_row = player_meta.loc[pid]
-            similar.append(
-                {
-                    "Player Id": pid,
-                    "Name": meta_row["Name"],
-                    "Position": meta_row["Position"],
-                    "Team": meta_row["Current Team"],
-                    "PosGroup": meta_row["PosGroup"],
-                    "Distance": float(dist),
-                }
-            )
-
-            if len(similar) >= top_k:
-                break
-
-    if not similar:
-        return None
-
-    return similar
-
-# ----------------------------------------------------------
-# STAT PROFILE COMPARISON (radar-style line chart)
-# ----------------------------------------------------------
-def get_profile_features_for_group(pos_group: str):
-    """
-    Decide which aggregated features to use for profile plots,
-    based on our prefixed feature columns in player_features.
-    """
-    pos_group = (pos_group or "OTHER").upper()
-
-    if pos_group == "QB":
-        return [
-            "pass_Passing Yards",
-            "pass_TD Passes",
-            "pass_Ints",
-            "rush_Rushing Yards",
-        ]
-    if pos_group == "RB":
-        return [
-            "rush_Rushing Yards",
-            "rush_Rushing TDs",
-            "recv_Receiving Yards",
-        ]
-    if pos_group == "WRTE":
-        return [
-            "recv_Receiving Yards",
-            "recv_Receiving TDs",
-            "rush_Rushing Yards",
-        ]
-    if pos_group in {"DB", "LB"}:
-        return [
-            "def_Total Tackles",
-            "def_Sacks",
-            "def_Ints",
-        ]
-    if pos_group == "DL":
-        return [
-            "def_Total Tackles",
-            "def_Sacks",
-        ]
-    if pos_group == "K":
-        return [
-            "fg_FGs Made",
-            "fg_Extra Points Made",
-        ]
-    if pos_group == "P":
-        return [
-            "punt_Punts",
-            "punt_Gross Punting Yards",
-        ]
-    if pos_group == "RET":
-        return [
-            "kr_Yards Returned",
-            "kr_Returns for TDs",
-            "pr_Yards Returned",
-            "pr_Returns for TDs",
-        ]
-
-    # Fallback: just pick a few of the largest total columns if they exist
-    if not player_features.empty:
-        return list(player_features.columns[:5])
-
-    return []
-
-
-def make_stat_profile_dataframe(player_id_1, player_id_2):
-    """
-    Build a long-form dataframe with normalized stats for two players:
-    columns: Metric, Player, Value (0..1)
-    """
-    if player_features is None or player_features.empty:
-        return None
-
-    if player_id_1 not in player_meta.index:
-        return None
-    if player_id_2 not in player_meta.index:
-        return None
-
-    pg1 = player_meta.loc[player_id_1, "PosGroup"]
-    pg2 = player_meta.loc[player_id_2, "PosGroup"]
-
-    # Use the first player's group as the reference
-    pos_group = pg1 or pg2
-    feature_cols = get_profile_features_for_group(pos_group)
-
-    feature_cols = [c for c in feature_cols if c in player_features.columns]
-    if not feature_cols:
-        return None
-
-    v1 = player_features.loc[player_id_1, feature_cols].astype(float)
-    v2 = player_features.loc[player_id_2, feature_cols].astype(float)
-
-    # Combine to normalize per-feature
-    mat = pd.DataFrame(
-        {
-            "Player1": v1,
-            "Player2": v2,
-        },
-        index=feature_cols,
-    )
-
-    # Normalize each feature to 0..1 across the two players
-    mins = mat.min(axis=1)
-    maxs = mat.max(axis=1)
-    ranges = maxs - mins
-
-    # Avoid divide-by-zero: if range == 0 → all zeros
-    norm = pd.DataFrame(index=feature_cols, columns=["Player1", "Player2"], dtype=float)
-    for f in feature_cols:
-        if ranges[f] == 0:
-            norm.loc[f, "Player1"] = 0.0
-            norm.loc[f, "Player2"] = 0.0
-        else:
-            norm.loc[f, "Player1"] = (mat.loc[f, "Player1"] - mins[f]) / ranges[f]
-            norm.loc[f, "Player2"] = (mat.loc[f, "Player2"] - mins[f]) / ranges[f]
-
-    # Long form
-    name1 = player_meta.loc[player_id_1, "Name"]
-    name2 = player_meta.loc[player_id_2, "Name"]
-
-    df_long = pd.DataFrame(
-        {
-            "Metric": list(feature_cols) * 2,
-            "Player": [name1] * len(feature_cols) + [name2] * len(feature_cols),
-            "Value": pd.concat(
-                [norm["Player1"], norm["Player2"]], ignore_index=True
-            ),
-        }
-    )
-
-    # Clean metric labels (strip prefixes like "pass_", "rush_")
-    df_long["Metric"] = df_long["Metric"].apply(
-        lambda s: s.split("_", 1)[1] if "_" in s else s
-    )
-
-    return df_long
-
-
-def show_stat_profile_chart(player_id_1, player_id_2, key_prefix="stat_profile"):
-    df_long = make_stat_profile_dataframe(player_id_1, player_id_2)
-    if df_long is None or df_long.empty:
-        st.info("Not enough data to build a stat profile comparison.")
-        return
-
-    chart = (
-        alt.Chart(df_long)
-        .mark_line(point=True)
-        .encode(
-            x=alt.X("Metric:N", title="Metric"),
-            y=alt.Y(
-                "Value:Q",
-                title="Normalized Value (0–1)",
-                scale=alt.Scale(domain=[0, 1]),
-            ),
-            color=alt.Color("Player:N", title="Player"),
-            tooltip=["Player", "Metric", "Value"],
-        )
-        .properties(height=350, title="Stat Profile Comparison")
-    )
-
-    st.altair_chart(chart, use_container_width=True)
-
-
 # ----------------------------------------------------------
 # TITLE
 # ----------------------------------------------------------
@@ -1157,8 +421,8 @@ if "Weight (lbs)" in df_filtered.columns:
 # ----------------------------------------------------------
 st.write("---")
 st.subheader("League Overview")
-tab_pos, tab_team, tab_dist, tab_leaders, tab_clusters = st.tabs(
-    ["Positions", "Teams", "Distributions", "League Leaders", "tab_clusters"]
+tab_pos, tab_team, tab_dist, tab_leaders = st.tabs(
+    ["Positions", "Teams", "Distributions", "League Leaders"]
 )
 
 
@@ -1595,159 +859,6 @@ with tab_leaders:
                 "Punts",
             )
 
-# ----------------------------------------------------------
-# PLAYER CLUSTERS TAB
-# ----------------------------------------------------------
-with tab_clusters:
-    st.markdown("### Player Clusters (K-Means)")
-
-    cluster_features_df, all_feature_cols = build_cluster_feature_df()
-
-    if cluster_features_df.empty:
-        st.info("No feature data available for clustering.")
-    else:
-        # Respect current sidebar filters (team + position)
-        if "Player Id" in df_filtered.columns:
-            cluster_df = cluster_features_df[
-                cluster_features_df["Player Id"].isin(df_filtered["Player Id"])
-            ].copy()
-        else:
-            cluster_df = cluster_features_df.copy()
-
-        if cluster_df.empty:
-            st.info("No players available under current filters to cluster.")
-        else:
-            # Position filter within cluster tab
-            pos_options = (
-                cluster_df["Position"]
-                .fillna("Unknown")
-                .astype(str)
-                .sort_values()
-                .unique()
-                .tolist()
-            )
-            pos_choice = st.selectbox(
-                "Position group to cluster",
-                ["All Positions"] + pos_options,
-                index=0,
-                key="cluster_pos_choice",
-            )
-
-            if pos_choice != "All Positions":
-                cluster_df = cluster_df[cluster_df["Position"] == pos_choice].copy()
-
-            if cluster_df.empty:
-                st.info("No players match this position filter.")
-            else:
-                # Feature set choice
-                feature_group = st.radio(
-                    "Feature group",
-                    ["All", "Offense", "Defense", "Special Teams"],
-                    index=0,
-                    horizontal=True,
-                    key="cluster_feature_group",
-                )
-
-                if feature_group == "Offense":
-                    feature_cols = [
-                        c for c in all_feature_cols
-                        if c in ["PassYds", "PassTD", "IntThrown",
-                                 "RushYds", "RushTD",
-                                 "RecYds", "RecTD"]
-                    ]
-                elif feature_group == "Defense":
-                    feature_cols = [
-                        c for c in all_feature_cols
-                        if c in ["Tackles", "Sacks", "DefInts"]
-                    ]
-                elif feature_group == "Special Teams":
-                    feature_cols = [
-                        c for c in all_feature_cols
-                        if c in ["FGMade", "XPMade", "Punts", "PuntYds", "KR_Yds", "PR_Yds"]
-                    ]
-                else:  # "All"
-                    feature_cols = all_feature_cols
-
-                # Make sure we actually have something numeric
-                feature_cols = [c for c in feature_cols if c in cluster_df.columns]
-
-                if not feature_cols:
-                    st.info("No numeric features available for the selected group.")
-                else:
-                    # Filter out players with all-zero features (optional)
-                    mat = cluster_df[feature_cols].to_numpy()
-                    non_zero_mask = (mat.sum(axis=1) != 0)
-                    cluster_df = cluster_df[non_zero_mask]
-                    mat = mat[non_zero_mask]
-
-                    if cluster_df.shape[0] < 2:
-                        st.info("Not enough players with non-zero stats to form clusters.")
-                    else:
-                        # Number of clusters
-                        max_k = min(10, cluster_df.shape[0])
-                        k = st.slider(
-                            "Number of clusters (K)",
-                            min_value=2,
-                            max_value=max_k,
-                            value=min(5, max_k),
-                            step=1,
-                            key="cluster_k",
-                        )
-
-                        # Scale + cluster
-                        scaler = StandardScaler()
-                        X_scaled = scaler.fit_transform(mat)
-
-                        kmeans = KMeans(
-                            n_clusters=k,
-                            random_state=42,
-                            n_init=10,
-                        )
-                        labels = kmeans.fit_predict(X_scaled)
-
-                        cluster_df = cluster_df.copy()
-                        cluster_df["Cluster"] = labels
-
-                        st.markdown("#### Cluster Assignments (Filtered Players)")
-                        st.dataframe(
-                            cluster_df[["Name", "Current Team", "Position", "Cluster"] + feature_cols]
-                            .sort_values(by="Cluster")
-                        )
-
-                        # Simple 2D scatter using two chosen features
-                        if len(feature_cols) >= 2:
-                            x_feat = st.selectbox(
-                                "X-axis feature",
-                                feature_cols,
-                                index=0,
-                                key="cluster_x_feat",
-                            )
-                            y_feat = st.selectbox(
-                                "Y-axis feature",
-                                feature_cols,
-                                index=1,
-                                key="cluster_y_feat",
-                            )
-
-                            scatter_df = cluster_df[["Name", "Current Team", "Position", "Cluster", x_feat, y_feat]].copy()
-
-                            chart = (
-                                alt.Chart(scatter_df)
-                                .mark_circle(size=80)
-                                .encode(
-                                    x=alt.X(f"{x_feat}:Q", title=x_feat),
-                                    y=alt.Y(f"{y_feat}:Q", title=y_feat),
-                                    color=alt.Color("Cluster:N", title="Cluster"),
-                                    tooltip=["Name", "Position", "Current Team", x_feat, y_feat],
-                                )
-                                .properties(height=400)
-                            )
-
-                            st.markdown("#### Cluster Visualization")
-                            st.altair_chart(chart, use_container_width=True)
-                        else:
-                            st.info("Not enough features to make a 2D scatter plot.")
-
 
 # ----------------------------------------------------------
 # PLAYER LOOKUP
@@ -1955,57 +1066,6 @@ def show_generic_career_stats(
 
     st.markdown("#### Career Summary")
     st.dataframe(formatted_df)
-
-    # ----------------------------------------------------------
-    # SIMILAR PLAYERS (EMBEDDING-BASED)
-    # ----------------------------------------------------------
-    st.write("---")
-    st.subheader("Similar Players (Career Stats)")
-
-    sim_feature_group = st.radio(
-        "Similarity based on",
-        ["All", "Offense", "Defense", "Special Teams"],
-        index=0,
-        horizontal=True,
-        key="sim_feat_group",
-    )
-
-    sim_k = st.slider(
-        "Number of similar players to show",
-        min_value=3,
-        max_value=15,
-        value=8,
-        step=1,
-        key="sim_k",
-    )
-
-    sim_df = get_similar_players(
-        player_row=player_data,
-        feature_group=sim_feature_group,
-        n_neighbors=sim_k,
-    )
-
-    if sim_df is None or sim_df.empty:
-        st.info("Not enough data to compute similar players for this selection.")
-    else:
-        st.markdown("These players have similar **career stat profiles**:")
-
-        st.dataframe(sim_df)
-
-        # Bar chart of similarity
-        chart = (
-            alt.Chart(sim_df)
-            .mark_bar()
-            .encode(
-                y=alt.Y("Name:N", sort="-x", title="Player"),
-                x=alt.X("Similarity:Q", scale=alt.Scale(domain=[0, 1]), title="Similarity"),
-                color=alt.value("#1f77b4"),
-                tooltip=["Name", "Position", "Current Team", "Similarity"],
-            )
-            .properties(height=300)
-        )
-        st.altair_chart(chart, use_container_width=True)
-
 
     # ---------- PLOT OVER TIME ----------
     if year_col not in player_rows.columns:
@@ -2500,7 +1560,7 @@ def show_passing_stats():
         int_fields=int_fields,
         one_decimal_fields=one_decimal_fields,
         percent_fields=percent_fields,
-        key_prefix="passing_main",
+        key_prefix="passing",
         default_metric_name="Passing Yards",
     )
 
@@ -2541,7 +1601,7 @@ def show_rushing_stats():
         int_fields=int_fields,
         one_decimal_fields=one_decimal_fields,
         percent_fields=percent_fields,
-        key_prefix="rushing_main",
+        key_prefix="rushing",
         default_metric_name="Rushing Yards",
     )
 
@@ -2577,7 +1637,7 @@ def show_receiving_stats():
         int_fields=int_fields,
         one_decimal_fields=one_decimal_fields,
         percent_fields=None,
-        key_prefix="receiving_main",
+        key_prefix="receiving",
         default_metric_name="Receiving Yards",
     )
 
@@ -2614,7 +1674,7 @@ def show_defensive_stats():
         int_fields=int_fields,
         one_decimal_fields=one_decimal_fields,
         percent_fields=None,
-        key_prefix="defensive_main",
+        key_prefix="defensive",
         default_metric_name="Total Tackles",
     )
 
@@ -2869,7 +1929,7 @@ def show_off_defensive_stats():
                    ],
         int_fields=int_fields,
         percent_fields=None,
-        key_prefix="defensive_off",
+        key_prefix="defensive",
         default_metric_name="Total Tackles",
     )
 
@@ -2912,7 +1972,7 @@ def show_off_passing_stats():
         ],
         int_fields=int_fields,
         percent_fields=percent_fields,
-        key_prefix="passing_off",
+        key_prefix="passing",
         default_metric_name="Passing Yards",
     )
 
@@ -2951,7 +2011,7 @@ def show_off_rushing_stats():
         ], 
         int_fields=int_fields,
         one_decimal_fields=one_decimal_fields,
-        key_prefix="rushing_off",
+        key_prefix="rushing",
         default_metric_name="Rushing Yards",
     )
 
@@ -2989,7 +2049,7 @@ def show_off_receiving_stats():
         int_fields=int_fields,
         one_decimal_fields=one_decimal_fields,
         percent_fields=None,
-        key_prefix="receiving_off",
+        key_prefix="receiving",
         default_metric_name="Receiving Yards",
     )
 
@@ -3298,58 +2358,6 @@ if summary:
             for col, (label, value) in zip(cols, row_cards):
                 col.metric(label, fmt_int(value) if isinstance(value, (int, float)) else str(value))
             idx += 4
-
-# ----------------------------------------------------------
-# SIMILAR PLAYERS
-# ----------------------------------------------------------
-st.subheader("Similar Players")
-
-similar_list = find_similar_players(player_data["Player Id"], top_k=5)
-
-if not similar_list:
-    st.info("No similar player data available.")
-else:
-    sim_df = pd.DataFrame(similar_list)
-
-    # Show table including position group
-    cols_to_show = [c for c in ["Name", "Position", "Team", "PosGroup", "Distance"] if c in sim_df.columns]
-    st.dataframe(sim_df[cols_to_show])
-
-    # Distance bar chart
-    chart = (
-        alt.Chart(sim_df)
-        .mark_bar()
-        .encode(
-            x=alt.X("Distance:Q", title="Similarity Distance (lower = more similar)"),
-            y=alt.Y("Name:N", sort="-x", title="Player"),
-            color="Distance:Q",
-            tooltip=["Name", "Position", "Team", "PosGroup", "Distance"],
-        )
-        .properties(height=250, title="Closest Players in Feature Space")
-    )
-    st.altair_chart(chart, use_container_width=True)
-
-    # -------- Stat Profile Comparison with a chosen similar player --------
-    st.markdown("#### Stat Profile vs Similar Player")
-
-    # Default to the most similar one (first row)
-    default_sim_id = sim_df.iloc[0]["Player Id"]
-
-    # Select which similar player to compare
-    sim_name_options = sim_df["Name"].tolist()
-    sim_name_default = sim_df.iloc[0]["Name"]
-
-    chosen_name = st.selectbox(
-        "Choose a similar player to compare stat profile with",
-        sim_name_options,
-        index=sim_name_options.index(sim_name_default),
-        key="similar_player_profile_select",
-    )
-
-    chosen_row = sim_df[sim_df["Name"] == chosen_name].iloc[0]
-    chosen_id = chosen_row["Player Id"]
-
-    show_stat_profile_chart(player_data["Player Id"], chosen_id, key_prefix="stat_profile")
 
 # ----------------------------------------------------------
 # COMPARISON SUMMARY CARDS (SIDE-BY-SIDE)
