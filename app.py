@@ -5,8 +5,6 @@ import altair as alt
 from pathlib import Path
 from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import NearestNeighbors
-from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans
 
 # ----------------------------------------------------------
 # PAGE CONFIG
@@ -308,7 +306,7 @@ def compute_team_stat_totals(
 # ----------------------------------------------------------
 basic_path = Path("data") / "Basic_Stats.csv"
 
-@st.cache
+@st.cache_data
 def load_basic_stats(path):
     return pd.read_csv(path)
 
@@ -330,7 +328,7 @@ def fmt_int(value, default="N/A"):
 # ----------------------------------------------------------
 # GENERIC CSV LOADER
 # ----------------------------------------------------------
-@st.cache
+@st.cache_data
 def load_csv(path: Path):
     return pd.read_csv(path)
 
@@ -401,220 +399,8 @@ kicker_logs_df = load_csv(kicker_logs_path) if kicker_logs_path.exists() else No
 punter_logs_path = Path("data") / "Game_Logs_Punters.csv"
 punter_logs_df = load_csv(punter_logs_path) if punter_logs_path.exists() else None
 
-@st.cache
-def build_cluster_feature_df():
-    """
-    Build a per-player career feature matrix for clustering.
-    Uses totals from passing, rushing, receiving, defense, returns, kicking, punting.
-    """
-    if "Player Id" not in df.columns:
-        return pd.DataFrame(), []
 
-    rows = []
-
-    for _, row in df.iterrows():
-        pid = row["Player Id"]
-        name = row.get("Name", "")
-        pos = row.get("Position", "")
-        team = row.get("Current Team", "")
-
-        # Base feature dict
-        feats = {
-            "Player Id": pid,
-            "Name": name,
-            "Position": pos,
-            "Current Team": team,
-            # Offense
-            "PassYds": 0.0,
-            "PassTD": 0.0,
-            "IntThrown": 0.0,
-            "RushYds": 0.0,
-            "RushTD": 0.0,
-            "RecYds": 0.0,
-            "RecTD": 0.0,
-            # Defense
-            "Tackles": 0.0,
-            "Sacks": 0.0,
-            "DefInts": 0.0,
-            # Special teams
-            "FGMade": 0.0,
-            "XPMade": 0.0,
-            "Punts": 0.0,
-            "PuntYds": 0.0,
-            "KR_Yds": 0.0,
-            "PR_Yds": 0.0,
-        }
-
-        # ----- Passing -----
-        if passing_df is not None and "Player Id" in passing_df.columns:
-            p = passing_df[passing_df["Player Id"] == pid].copy()
-            if not p.empty:
-                if "Passing Yards" in p.columns:
-                    p["Passing Yards"] = (
-                        p["Passing Yards"].astype(str).str.replace(",", "", regex=False)
-                    )
-                    feats["PassYds"] = pd.to_numeric(
-                        p["Passing Yards"], errors="coerce"
-                    ).fillna(0).sum()
-
-                if "TD Passes" in p.columns:
-                    feats["PassTD"] = pd.to_numeric(
-                        p["TD Passes"], errors="coerce"
-                    ).fillna(0).sum()
-
-                if "Ints" in p.columns:
-                    feats["IntThrown"] = pd.to_numeric(
-                        p["Ints"], errors="coerce"
-                    ).fillna(0).sum()
-
-        # ----- Rushing -----
-        if rushing_df is not None and "Player Id" in rushing_df.columns:
-            r = rushing_df[rushing_df["Player Id"] == pid].copy()
-            if not r.empty:
-                if "Rushing Yards" in r.columns:
-                    r["Rushing Yards"] = (
-                        r["Rushing Yards"].astype(str).str.replace(",", "", regex=False)
-                    )
-                    feats["RushYds"] = pd.to_numeric(
-                        r["Rushing Yards"], errors="coerce"
-                    ).fillna(0).sum()
-
-                if "Rushing TDs" in r.columns:
-                    feats["RushTD"] = pd.to_numeric(
-                        r["Rushing TDs"], errors="coerce"
-                    ).fillna(0).sum()
-
-        # ----- Receiving -----
-        if receiving_df is not None and "Player Id" in receiving_df.columns:
-            rec = receiving_df[receiving_df["Player Id"] == pid].copy()
-            if not rec.empty:
-                if "Receiving Yards" in rec.columns:
-                    rec["Receiving Yards"] = (
-                        rec["Receiving Yards"].astype(str).str.replace(",", "", regex=False)
-                    )
-                    feats["RecYds"] = pd.to_numeric(
-                        rec["Receiving Yards"], errors="coerce"
-                    ).fillna(0).sum()
-
-                if "Receiving TDs" in rec.columns:
-                    feats["RecTD"] = pd.to_numeric(
-                        rec["Receiving TDs"], errors="coerce"
-                    ).fillna(0).sum()
-
-        # ----- Defense -----
-        if defensive_df is not None and "Player Id" in defensive_df.columns:
-            d = defensive_df[defensive_df["Player Id"] == pid].copy()
-            if not d.empty:
-                if "Total Tackles" in d.columns:
-                    feats["Tackles"] = pd.to_numeric(
-                        d["Total Tackles"], errors="coerce"
-                    ).fillna(0).sum()
-
-                if "Sacks" in d.columns:
-                    feats["Sacks"] = pd.to_numeric(
-                        d["Sacks"], errors="coerce"
-                    ).fillna(0).sum()
-
-                if "Ints" in d.columns:
-                    feats["DefInts"] = pd.to_numeric(
-                        d["Ints"], errors="coerce"
-                    ).fillna(0).sum()
-
-        # ----- Kick Return -----
-        if kick_return_df is not None and "Player Id" in kick_return_df.columns:
-            kr = kick_return_df[kick_return_df["Player Id"] == pid].copy()
-            if not kr.empty and "Yards Returned" in kr.columns:
-                kr["Yards Returned"] = (
-                    kr["Yards Returned"].astype(str).str.replace(",", "", regex=False)
-                )
-                feats["KR_Yds"] = pd.to_numeric(
-                    kr["Yards Returned"], errors="coerce"
-                ).fillna(0).sum()
-
-        # ----- Punt Return -----
-        if punt_return_df is not None and "Player Id" in punt_return_df.columns:
-            pr = punt_return_df[punt_return_df["Player Id"] == pid].copy()
-            if not pr.empty and "Yards Returned" in pr.columns:
-                pr["Yards Returned"] = (
-                    pr["Yards Returned"].astype(str).str.replace(",", "", regex=False)
-                )
-                feats["PR_Yds"] = pd.to_numeric(
-                    pr["Yards Returned"], errors="coerce"
-                ).fillna(0).sum()
-
-        # ----- Kicking -----
-        if fg_df is not None and "Player Id" in fg_df.columns:
-            k = fg_df[fg_df["Player Id"] == pid].copy()
-            if not k.empty:
-                if "FGs Made" in k.columns:
-                    feats["FGMade"] = pd.to_numeric(
-                        k["FGs Made"], errors="coerce"
-                    ).fillna(0).sum()
-
-                if "Extra Points Made" in k.columns:
-                    feats["XPMade"] = pd.to_numeric(
-                        k["Extra Points Made"], errors="coerce"
-                    ).fillna(0).sum()
-
-        # ----- Punting -----
-        if punting_df is not None and "Player Id" in punting_df.columns:
-            pnt = punting_df[punting_df["Player Id"] == pid].copy()
-            if not pnt.empty:
-                if "Punts" in pnt.columns:
-                    feats["Punts"] = pd.to_numeric(
-                        pnt["Punts"], errors="coerce"
-                    ).fillna(0).sum()
-
-                if "Gross Punting Yards" in pnt.columns:
-                    pnt["Gross Punting Yards"] = (
-                        pnt["Gross Punting Yards"].astype(str).str.replace(",", "", regex=False)
-                    )
-                    feats["PuntYds"] = pd.to_numeric(
-                        pnt["Gross Punting Yards"], errors="coerce"
-                    ).fillna(0).sum()
-
-        rows.append(feats)
-
-    feature_df = pd.DataFrame(rows)
-
-    # Ensure numeric types
-    feature_cols = [
-        "PassYds", "PassTD", "IntThrown",
-        "RushYds", "RushTD",
-        "RecYds", "RecTD",
-        "Tackles", "Sacks", "DefInts",
-        "FGMade", "XPMade",
-        "Punts", "PuntYds",
-        "KR_Yds", "PR_Yds",
-    ]
-
-    for c in feature_cols:
-        if c in feature_df.columns:
-            feature_df[c] = pd.to_numeric(feature_df[c], errors="coerce").fillna(0.0)
-        else:
-            feature_df[c] = 0.0
-
-    return feature_df, feature_cols
-
-def get_feature_group_cols_for_similarity(all_feature_cols, feature_group: str):
-    """Return the subset of feature columns for a given feature group."""
-    if feature_group == "Offense":
-        cols = [
-            "PassYds", "PassTD", "IntThrown",
-            "RushYds", "RushTD",
-            "RecYds", "RecTD",
-        ]
-    elif feature_group == "Defense":
-        cols = ["Tackles", "Sacks", "DefInts"]
-    elif feature_group == "Special Teams":
-        cols = ["FGMade", "XPMade", "Punts", "PuntYds", "KR_Yds", "PR_Yds"]
-    else:  # "All"
-        cols = all_feature_cols
-
-    # Only keep those that actually exist
-    return [c for c in cols if c in all_feature_cols]
-
-@st.cache
+@st.cache_resource
 def build_similarity_index(feature_group: str = "All"):
     """
     Build a similarity index (StandardScaler + NearestNeighbors) for the chosen feature group.
@@ -718,7 +504,7 @@ def get_similar_players(player_row, feature_group: str = "All", n_neighbors: int
 # ----------------------------------------------------------
 # PLAYER SIMILARITY MODEL
 # ----------------------------------------------------------
-@st.cache(allow_output_mutation=True)
+@st.cache_resource(allow_output_mutation=True)
 def build_player_similarity_models():
     """
     Build:
@@ -1157,8 +943,8 @@ if "Weight (lbs)" in df_filtered.columns:
 # ----------------------------------------------------------
 st.write("---")
 st.subheader("League Overview")
-tab_pos, tab_team, tab_dist, tab_leaders, tab_clusters = st.tabs(
-    ["Positions", "Teams", "Distributions", "League Leaders", "tab_clusters"]
+tab_pos, tab_team, tab_dist, tab_leaders = st.tabs(
+    ["Positions", "Teams", "Distributions", "League Leaders"]
 )
 
 
@@ -1594,160 +1380,6 @@ with tab_leaders:
                 leaders_punts,
                 "Punts",
             )
-
-# ----------------------------------------------------------
-# PLAYER CLUSTERS TAB
-# ----------------------------------------------------------
-with tab_clusters:
-    st.markdown("### Player Clusters (K-Means)")
-
-    cluster_features_df, all_feature_cols = build_cluster_feature_df()
-
-    if cluster_features_df.empty:
-        st.info("No feature data available for clustering.")
-    else:
-        # Respect current sidebar filters (team + position)
-        if "Player Id" in df_filtered.columns:
-            cluster_df = cluster_features_df[
-                cluster_features_df["Player Id"].isin(df_filtered["Player Id"])
-            ].copy()
-        else:
-            cluster_df = cluster_features_df.copy()
-
-        if cluster_df.empty:
-            st.info("No players available under current filters to cluster.")
-        else:
-            # Position filter within cluster tab
-            pos_options = (
-                cluster_df["Position"]
-                .fillna("Unknown")
-                .astype(str)
-                .sort_values()
-                .unique()
-                .tolist()
-            )
-            pos_choice = st.selectbox(
-                "Position group to cluster",
-                ["All Positions"] + pos_options,
-                index=0,
-                key="cluster_pos_choice",
-            )
-
-            if pos_choice != "All Positions":
-                cluster_df = cluster_df[cluster_df["Position"] == pos_choice].copy()
-
-            if cluster_df.empty:
-                st.info("No players match this position filter.")
-            else:
-                # Feature set choice
-                feature_group = st.radio(
-                    "Feature group",
-                    ["All", "Offense", "Defense", "Special Teams"],
-                    index=0,
-                    horizontal=True,
-                    key="cluster_feature_group",
-                )
-
-                if feature_group == "Offense":
-                    feature_cols = [
-                        c for c in all_feature_cols
-                        if c in ["PassYds", "PassTD", "IntThrown",
-                                 "RushYds", "RushTD",
-                                 "RecYds", "RecTD"]
-                    ]
-                elif feature_group == "Defense":
-                    feature_cols = [
-                        c for c in all_feature_cols
-                        if c in ["Tackles", "Sacks", "DefInts"]
-                    ]
-                elif feature_group == "Special Teams":
-                    feature_cols = [
-                        c for c in all_feature_cols
-                        if c in ["FGMade", "XPMade", "Punts", "PuntYds", "KR_Yds", "PR_Yds"]
-                    ]
-                else:  # "All"
-                    feature_cols = all_feature_cols
-
-                # Make sure we actually have something numeric
-                feature_cols = [c for c in feature_cols if c in cluster_df.columns]
-
-                if not feature_cols:
-                    st.info("No numeric features available for the selected group.")
-                else:
-                    # Filter out players with all-zero features (optional)
-                    mat = cluster_df[feature_cols].to_numpy()
-                    non_zero_mask = (mat.sum(axis=1) != 0)
-                    cluster_df = cluster_df[non_zero_mask]
-                    mat = mat[non_zero_mask]
-
-                    if cluster_df.shape[0] < 2:
-                        st.info("Not enough players with non-zero stats to form clusters.")
-                    else:
-                        # Number of clusters
-                        max_k = min(10, cluster_df.shape[0])
-                        k = st.slider(
-                            "Number of clusters (K)",
-                            min_value=2,
-                            max_value=max_k,
-                            value=min(5, max_k),
-                            step=1,
-                            key="cluster_k",
-                        )
-
-                        # Scale + cluster
-                        scaler = StandardScaler()
-                        X_scaled = scaler.fit_transform(mat)
-
-                        kmeans = KMeans(
-                            n_clusters=k,
-                            random_state=42,
-                            n_init=10,
-                        )
-                        labels = kmeans.fit_predict(X_scaled)
-
-                        cluster_df = cluster_df.copy()
-                        cluster_df["Cluster"] = labels
-
-                        st.markdown("#### Cluster Assignments (Filtered Players)")
-                        st.dataframe(
-                            cluster_df[["Name", "Current Team", "Position", "Cluster"] + feature_cols]
-                            .sort_values(by="Cluster")
-                        )
-
-                        # Simple 2D scatter using two chosen features
-                        if len(feature_cols) >= 2:
-                            x_feat = st.selectbox(
-                                "X-axis feature",
-                                feature_cols,
-                                index=0,
-                                key="cluster_x_feat",
-                            )
-                            y_feat = st.selectbox(
-                                "Y-axis feature",
-                                feature_cols,
-                                index=1,
-                                key="cluster_y_feat",
-                            )
-
-                            scatter_df = cluster_df[["Name", "Current Team", "Position", "Cluster", x_feat, y_feat]].copy()
-
-                            chart = (
-                                alt.Chart(scatter_df)
-                                .mark_circle(size=80)
-                                .encode(
-                                    x=alt.X(f"{x_feat}:Q", title=x_feat),
-                                    y=alt.Y(f"{y_feat}:Q", title=y_feat),
-                                    color=alt.Color("Cluster:N", title="Cluster"),
-                                    tooltip=["Name", "Position", "Current Team", x_feat, y_feat],
-                                )
-                                .properties(height=400)
-                            )
-
-                            st.markdown("#### Cluster Visualization")
-                            st.altair_chart(chart, use_container_width=True)
-                        else:
-                            st.info("Not enough features to make a 2D scatter plot.")
-
 
 # ----------------------------------------------------------
 # PLAYER LOOKUP
@@ -3704,56 +3336,3 @@ if pos.startswith(("NT","OLB")):
         show_offensive_line_stats()
         show_off_rushing_stats()
         show_off_receiving_stats()
-
-# ----------------------------------------------------------
-# RAW COLUMN DEBUGGERS
-# ----------------------------------------------------------
-with st.expander("Show raw basic stats columns"):
-    st.write(list(df.columns))
-
-if passing_df is not None:
-    with st.expander("Show raw passing stats columns"):
-        st.write(list(passing_df.columns))
-
-if rushing_df is not None:
-    with st.expander("Show raw rushing stats columns"):
-        st.write(list(rushing_df.columns))
-
-if receiving_df is not None:
-    with st.expander("Show raw receiving stats columns"):
-        st.write(list(receiving_df.columns))
-
-if defensive_df is not None:
-    with st.expander("Show raw defensive stats columns"):
-        st.write(list(defensive_df.columns))
-
-if fg_df is not None:
-    with st.expander("Show raw field goal kicker stats columns"):
-        st.write(list(fg_df.columns))
-
-if fumbles_df is not None:
-    with st.expander("Show raw fumbles stats columns"):
-        st.write(list(fumbles_df.columns))
-
-if kick_return_df is not None:
-    with st.expander("Show raw kick return stats columns"):
-        st.write(list(kick_return_df.columns))
-
-if kickoff_df is not None:
-    with st.expander("Show raw kickoff stats columns"):
-        st.write(list(kickoff_df.columns))
-
-if ol_df is not None:
-    with st.expander("Show raw offensive line stats columns"):
-        st.write(list(ol_df.columns))
-
-if punt_return_df is not None:
-    with st.expander("Show raw punt return stats columns"):
-        st.write(list(punt_return_df.columns))
-
-if punting_df is not None:
-    with st.expander("Show raw punting stats columns"):
-        st.write(list(punting_df.columns))
-
-with st.expander("DEBUG: Raw Age Values"):
-    st.write(df_filtered["Age"].head(50).tolist())
