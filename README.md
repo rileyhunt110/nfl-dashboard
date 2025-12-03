@@ -100,15 +100,18 @@ Multi-metric similarity across several performance groups
 Even though the app reads CSV files from the data/ folder, the underlying structure is equivalent to this relational model:
 
 Players
-Column	Description
-player_id	Unique player ID
-name	Player name
-position	Position abbreviation
-team	Current team
-height_in	Height (in inches)
-weight_lb	Weight (in pounds)
-age	Age
-college	College attended
+|Column	|Description|
+|---|---|
+|player_id	|Unique player ID |
+|name	|Player name|
+|position	|Position abbreviation|
+|team	|Current team|
+|height_in	|Height (in inches)|
+|weight_lb	|Weight (in pounds)|
+|age	|Age|
+|college	|College attended|
+
+
 SeasonStats
 
 Per-player, per-season statistics:
