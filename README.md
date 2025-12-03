@@ -22,30 +22,30 @@ All views update dynamically based on the filters selected.
 
 At a glance:
 
-Number of players shown
+* Number of players shown
 
-Average age
+* Average age
 
-Average height
+* Average height
 
-Average weight
+* Average weight
 
 ✔ Multiple Analytical Views
 1. Positions Overview
 
-Bar chart showing number of players per position
+* Bar chart showing number of players per position
 
-Great for roster composition and league-wide positional analysis
+* Great for roster composition and league-wide positional analysis
 
 2. Team Dashboard
 
-Includes:
+* Includes:
 
-Team roster table
+* Team roster table
 
-Team average age/height/weight
+* Team average age/height/weight
 
-Aggregated career totals for players on the selected team
+* Aggregated career totals for players on the selected team
 
 Leaderboards for the team’s strongest performers
 
@@ -53,11 +53,11 @@ Leaderboards for the team’s strongest performers
 
 Explore league-wide or filtered histograms for:
 
-Age
+* Age
 
-Height
+* Height
 
-Weight
+* Weight
 
 Helps visualize physical trends across teams and positions.
 
@@ -65,35 +65,35 @@ Helps visualize physical trends across teams and positions.
 
 Top performers in:
 
-Passing
+* Passing
 
-Rushing
+* Rushing
 
-Receiving
+* Receiving
 
-Defensive statistics
+* Defensive statistics
 
 Supports:
 
-Career totals
+* Career totals
 
-Single-season leaders
+* Single-season leaders
 
 5. Player Lookup & Similarity
 
 Search any player and view:
 
-Detailed bio
+* Detailed bio
 
-Career and season stats
+* Career and season stats
 
-Similar player comparisons using:
+* Similar player comparisons using:
 
-StandardScaler
+* StandardScaler
 
-NearestNeighbors
+* NearestNeighbors
 
-Multi-metric similarity across several performance groups
+* Multi-metric similarity across several performance groups
 
 🧱 Data Model (Conceptual)
 
@@ -134,11 +134,11 @@ Similarity Model Features
 
 Numeric stat features (passing, rushing, receiving, defense) are:
 
-Selected by feature group
+* Selected by feature group
 
-Standardized
+* Standardized
 
-Used to compute nearest neighbors
+* Used to compute nearest neighbors
 
 This demonstrates structured thinking in schema design and analytical modeling.
 
