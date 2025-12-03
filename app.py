@@ -596,124 +596,480 @@ def build_cluster_feature_df():
 
     return feature_df, feature_cols
 
-def get_feature_group_cols_for_similarity(all_feature_cols, feature_group: str):
-    """Return the subset of feature columns for a given feature group."""
+def pretty_feature_name(feat: str) -> str:
+    """Convert short feature codes into nicer labels."""
+    mapping = {
+        "PassYds": "Passing Yards",
+        "PassTD": "Passing TDs",
+        "IntThrown": "Interceptions Thrown",
+        "RushYds": "Rushing Yards",
+        "RushTD": "Rushing TDs",
+        "RecYds": "Receiving Yards",
+        "RecTD": "Receiving TDs",
+        "Tackles": "Total Tackles",
+        "Sacks": "Sacks",
+        "DefInts": "Defensive INTs",
+        "FGMade": "FGs Made",
+        "XPMade": "Extra Points Made",
+        "Punts": "Punts",
+        "PuntYds": "Punt Yards",
+        "KR_Yds": "Kick Return Yards",
+        "PR_Yds": "Punt Return Yards",
+    }
+    return mapping.get(feat, feat)
+
+
+def cluster_archetype_prefix(feature_group: str) -> str:
+    """Short prefix based on which feature group we're clustering on."""
     if feature_group == "Offense":
-        cols = [
-            "PassYds", "PassTD", "IntThrown",
-            "RushYds", "RushTD",
-            "RecYds", "RecTD",
-        ]
+        return "Offensive archetype"
     elif feature_group == "Defense":
-        cols = ["Tackles", "Sacks", "DefInts"]
+        return "Defensive archetype"
     elif feature_group == "Special Teams":
-        cols = ["FGMade", "XPMade", "Punts", "PuntYds", "KR_Yds", "PR_Yds"]
-    else:  # "All"
-        cols = all_feature_cols
+        return "Special teams archetype"
+    else:
+        return "Player archetype"
 
-    # Only keep those that actually exist
-    return [c for c in cols if c in all_feature_cols]
 
-@st.cache
-def build_similarity_index(feature_group: str = "All"):
+def build_cluster_label_map(centers, feature_cols, feature_group: str):
     """
-    Build a similarity index (StandardScaler + NearestNeighbors) for the chosen feature group.
-    Returns:
-      - feature_df: DataFrame with Player Id, Name, Position, Current Team and features
-      - feature_cols: numeric feature columns actually used
-      - scaler: fitted StandardScaler
-      - nn: fitted NearestNeighbors model
+    Given KMeans centers (in scaled space) + feature names, return
+    a dict: cluster_index -> human-readable archetype label.
+    We look at the largest-magnitude features for each cluster.
     """
-    feature_df, all_feature_cols = build_cluster_feature_df()
-    if feature_df.empty:
-        return feature_df, [], None, None
+    labels = {}
+    prefix = cluster_archetype_prefix(feature_group)
 
-    feature_cols = get_feature_group_cols_for_similarity(all_feature_cols, feature_group)
-    if not feature_cols:
-        return feature_df, [], None, None
+    centers = np.asarray(centers)
 
-    X = feature_df[feature_cols].to_numpy()
+    for idx, center in enumerate(centers):
+        # Sort features by absolute importance in this cluster center
+        center = np.asarray(center)
+        order = np.argsort(-np.abs(center))
+        # Take top 2–3 features
+        top_feats = [feature_cols[i] for i in order[:3] if i < len(feature_cols)]
 
-    # Filter out players with all-zero stats for this feature group
-    non_zero_mask = (X.sum(axis=1) != 0)
-    feature_df = feature_df[non_zero_mask].reset_index(drop=True)
-    X = X[non_zero_mask]
-
-    if feature_df.shape[0] < 2:
-        return feature_df, feature_cols, None, None
-
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
-    nn = NearestNeighbors(metric="cosine")
-    nn.fit(X_scaled)
-
-    return feature_df, feature_cols, scaler, nn
-
-def get_similar_players(player_row, feature_group: str = "All", n_neighbors: int = 8):
-    """
-    Given a player (basic stats row), return a DataFrame of most similar players
-    based on career stats in the chosen feature group.
-    """
-    if "Player Id" not in player_row:
-        return None
-
-    feature_df, feature_cols, scaler, nn = build_similarity_index(feature_group)
-
-    if not feature_cols or scaler is None or nn is None or feature_df.empty:
-        return None
-
-    pid = player_row["Player Id"]
-    if pid not in set(feature_df["Player Id"]):
-        return None
-
-    # Index of this player in feature_df
-    idx_list = feature_df.index[feature_df["Player Id"] == pid].tolist()
-    if not idx_list:
-        return None
-    idx = idx_list[0]
-
-    # Vector for this player
-    x = feature_df.loc[[idx], feature_cols].to_numpy()
-    x_scaled = scaler.transform(x)
-
-    # Ask for one extra neighbor (we'll drop the player themself)
-    k = min(n_neighbors + 1, feature_df.shape[0])
-    distances, indices = nn.kneighbors(x_scaled, n_neighbors=k)
-    distances = distances[0]
-    indices = indices[0]
-
-    rows = []
-    for dist, i in zip(distances, indices):
-        if i == idx:
-            # Skip the player themself
+        if not top_feats:
+            labels[idx] = f"{prefix} {idx}"
             continue
 
-        row = feature_df.iloc[i]
-        sim = 1.0 - float(dist)  # cosine similarity ≈ 1 - distance
-        if sim < 0:
-            sim = 0.0
+        pretty_feats = [pretty_feature_name(f) for f in top_feats]
+        # Simple label like: "Offensive archetype: Passing Yards & Passing TDs"
+        if len(pretty_feats) == 1:
+            core = pretty_feats[0]
+        else:
+            core = " & ".join(pretty_feats[:2])
 
-        rows.append(
-            {
-                "Name": row.get("Name", ""),
-                "Position": row.get("Position", ""),
-                "Current Team": row.get("Current Team", ""),
-                "Similarity": round(sim, 3),
-            }
-        )
+        labels[idx] = f"{prefix}: {core}"
 
-        if len(rows) >= n_neighbors:
-            break
+    return labels
 
-    if not rows:
-        return None
+def normalize_position(pos: str) -> str:
+    pos = pos.upper()
+    if pos.startswith("QB"): return "QB"
+    if pos in ("RB","HB","FB"): return "RB"
+    if pos.startswith(("WR","TE")): return "WR"
+    if pos.startswith(("DE","DL","DT","NT")): return "DL"
+    if pos.startswith(("ILB","LB","MLB","OLB")): return "LB"
+    if pos.startswith(("CB","DB")): return "CB"
+    if pos.startswith(("FS","SS","SAF")): return "S"
+    return "OTHER"
 
-    sim_df = pd.DataFrame(rows)
-    sim_df = sim_df.sort_values(by="Similarity", ascending=False)
+def _get_feat(fdict, key):
+    return float(fdict.get(key, 0.0) or 0.0)
 
-    return sim_df
+def _share(part, total):
+    total = float(total)
+    if total <= 0:
+        return 0.0
+    return float(part) / total
 
+def _soft_norm(x, scale):
+    # squashes x to roughly 0–1 range based on a rough scale
+    return float(x) / (float(x) + scale)
+
+
+# ----------------------------------------------------------
+# Player Archetype Scoring
+# ----------------------------------------------------------
+
+# Quarterback Archetypes
+def classify_qb_archetype(center):
+    scores = {
+        "Pocket Passer": 0,
+        "Gunslinger": 0,
+        "Game Manager": 0,
+        "Dual Threat": 0,
+        "Rushing QB": 0,
+        "Play Action Specialist": 0,
+    }
+
+    att_pg = center.get("PassAttemptsPerGame", 0)
+    ypa = center.get("PassingYardsPerAttempt", 0)
+    rush_yards = center.get("RushYds", 0)
+    rush_td = center.get("RushTD", 0)
+    int_rate = center.get("IntRate", 0)
+    sack_rate = center.get("SackRate", 0)
+    comp_pct = center.get("CompletionPercentage", 0)
+
+    # --- Pocket Passer ---
+    if att_pg > 30: scores["Pocket Passer"] += 2
+    if comp_pct > 65: scores["Pocket Passer"] += 1
+    if rush_yards < 150: scores["Pocket Passer"] += 1
+
+    # --- Gunslinger ---
+    if ypa > 7.8: scores["Gunslinger"] += 2
+    if int_rate > 2.5: scores["Gunslinger"] += 2
+    if rush_yards < 200: scores["Gunslinger"] += 1
+
+    # --- Game Manager ---
+    if att_pg < 25: scores["Game Manager"] += 2
+    if int_rate < 1.5: scores["Game Manager"] += 2
+    if comp_pct >= 62: scores["Game Manager"] += 1
+
+    # --- Dual Threat ---
+    if rush_yards > 400: scores["Dual Threat"] += 3
+    if rush_td >= 4: scores["Dual Threat"] += 2
+    if sack_rate < 5: scores["Dual Threat"] += 1
+
+    # --- Rushing QB ---
+    if rush_yards > 650: scores["Rushing QB"] += 4
+    if rush_td >= 8: scores["Rushing QB"] += 3
+
+    # --- Play Action Specialist ---
+    if ypa > 8.5 and att_pg < 28:
+        scores["Play Action Specialist"] += 3
+
+    return scores
+
+# Running Back Archetypes
+def classify_rb_archetype(center):
+    scores = {
+        "Bell Cow": 0,
+        "Power Back": 0,
+        "Speed Back": 0,
+        "Receiving Back": 0,
+        "Change of Pace": 0,
+        "Workhorse Runner": 0,
+    }
+
+    carries_pg = center.get("RushingAttemptsPerGame", 0)
+    rush_yards = center.get("RushYds", 0)
+    ypc = center.get("YardsPerCarry", 0)
+    rec_yards = center.get("RecYds", 0)
+    receptions = center.get("Receptions", 0)
+    long_runs20 = center.get("RushingMoreThan20", 0)
+
+    # --- Bell Cow ---
+    if carries_pg >= 15: scores["Bell Cow"] += 3
+    if rush_yards > 1000: scores["Bell Cow"] += 2
+
+    # --- Power Back ---
+    if ypc < 4.0: scores["Power Back"] += 2
+    if center.get("RushTD", 0) >= 8: scores["Power Back"] += 2
+
+    # --- Speed Back ---
+    if ypc > 4.8: scores["Speed Back"] += 2
+    if long_runs20 >= 5: scores["Speed Back"] += 2
+
+    # --- Receiving Back ---
+    if receptions >= 40: scores["Receiving Back"] += 3
+    if rec_yards > 300: scores["Receiving Back"] += 2
+
+    # --- Change of Pace ---
+    if carries_pg < 8 and ypc > 4.5:
+        scores["Change of Pace"] += 3
+
+    # --- Workhorse Runner ---
+    if carries_pg >= 18 and receptions < 20:
+        scores["Workhorse Runner"] += 3
+
+    return scores
+
+# Receiver Archetypes
+def classify_wr_archetype(center):
+    scores = {
+        "Deep Threat": 0,
+        "Possession Receiver": 0,
+        "Slot Receiver": 0,
+        "X Receiver": 0,
+        "Z Receiver": 0,
+        "Gadget Hybrid": 0,
+    }
+
+    ypr = center.get("YardsPerReception", 0)
+    rec = center.get("Receptions", 0)
+    rec_yards = center.get("ReceivingYards", 0)
+    rush_attempts = center.get("RushingAttempts", 0)
+    td_rate = center.get("ReceivingTDs", 0)
+
+    # --- Deep Threat ---
+    if ypr > 15: scores["Deep Threat"] += 3
+    if td_rate > 6: scores["Deep Threat"] += 2
+
+    # --- Possession ---
+    if ypr < 12: scores["Possession Receiver"] += 2
+    if rec >= 70: scores["Possession Receiver"] += 2
+
+    # --- Slot ---
+    if rec >= 60 and ypr < 11:
+        scores["Slot Receiver"] += 3
+
+    # --- X Receiver ---
+    if rec >= 80 or rec_yards >= 1000:
+        scores["X Receiver"] += 3
+
+    # --- Z Receiver ---
+    if 12 <= ypr <= 15: scores["Z Receiver"] += 2
+
+    # --- Gadget ---
+    if rush_attempts >= 5:
+        scores["Gadget Hybrid"] += 3
+
+    return scores
+
+# Defensive Line Archetypes
+def classify_dl_archetype(center: dict) -> str:
+    """
+    Uses only: Total Tackles, Sacks
+    to distinguish Speed Rusher / Power Rusher / Run Stopper / Nose / 3-Tech-style.
+    """
+    scores = {
+        "Speed Rusher": 0,
+        "Power Rusher": 0,
+        "Run-Stopper Edge": 0,
+        "Nose Tackle": 0,
+        "Penetrating 3-Tech": 0,
+    }
+
+    sacks = center.get("Sacks", 0) or 0
+    tackles = center.get("Total Tackles", 0) or 0
+
+    # Normalize a bit just in case we’re looking at multi-year totals
+    # but don't overthink it – it's just relative.
+    sacks_per_50_tk = sacks / max(tackles, 1) * 50
+
+    # --- Speed Rusher ---
+    if sacks_per_50_tk >= 8:  # lots of sacks relative to tackles
+        scores["Speed Rusher"] += 3
+    if sacks >= 8:
+        scores["Speed Rusher"] += 2
+    if tackles < 60:
+        scores["Speed Rusher"] += 1
+
+    # --- Power Rusher ---
+    if 4 <= sacks <= 10 and tackles >= 50:
+        scores["Power Rusher"] += 3
+    if sacks >= 6 and tackles >= 70:
+        scores["Power Rusher"] += 1
+
+    # --- Run-Stopper Edge ---
+    if tackles >= 75 and sacks <= 5:
+        scores["Run-Stopper Edge"] += 3
+
+    # --- Nose Tackle ---
+    if sacks <= 2 and tackles <= 55:
+        scores["Nose Tackle"] += 3
+
+    # --- Penetrating 3-Tech ---
+    if sacks >= 6 and 40 <= tackles <= 80:
+        scores["Penetrating 3-Tech"] += 3
+
+    return scores
+
+# Linebacker Archetypes
+def classify_lb_archetype(center: dict) -> str:
+    """
+    LB archetypes:
+      - Tackling Machine / MIKE
+      - Coverage Linebacker
+      - Pass-Rush LB / Edge Hybrid
+    Uses: Total Tackles, Sacks, Passes Defended, Ints
+    """
+    scores = {
+        "Tackling Machine MIKE": 0,
+        "Coverage Linebacker": 0,
+        "Pass-Rush LB / Edge": 0,
+    }
+
+    tackles = center.get("Total Tackles", 0) or 0
+    sacks = center.get("Sacks", 0) or 0
+    pdef = center.get("Passes Defended", 0) or 0
+    ints = center.get("Ints", 0) or 0
+
+    # --- Tackling Machine ---
+    if tackles >= 100:
+        scores["Tackling Machine MIKE"] += 3
+    if tackles >= 130:
+        scores["Tackling Machine MIKE"] += 2
+    if sacks < 6 and pdef < 10:
+        scores["Tackling Machine MIKE"] += 1
+
+    # --- Coverage Linebacker ---
+    if pdef >= 8:
+        scores["Coverage Linebacker"] += 3
+    if ints >= 3:
+        scores["Coverage Linebacker"] += 2
+    if tackles <= 110:
+        scores["Coverage Linebacker"] += 1
+
+    # --- Pass-Rush LB / Edge Hybrid ---
+    if sacks >= 7:
+        scores["Pass-Rush LB / Edge"] += 3
+    if sacks >= 10:
+        scores["Pass-Rush LB / Edge"] += 2
+    if pdef <= 6 and ints <= 2:
+        scores["Pass-Rush LB / Edge"] += 1
+
+    return scores
+
+# Corner Archetypes
+def classify_cb_archetype(center: dict) -> str:
+    """
+    CB archetypes:
+      - Ball-Hawk Corner
+      - Shutdown / Low-Target Corner
+      - Nickel Corner
+      - Zone Corner
+    Uses: Total Tackles, Passes Defended, Ints, Int Yards
+    """
+    scores = {
+        "Ball-Hawk Corner": 0,
+        "Shutdown Corner": 0,
+        "Nickel Corner": 0,
+        "Zone Corner": 0,
+    }
+
+    tackles = center.get("Total Tackles", 0) or 0
+    pdef = center.get("Passes Defended", 0) or 0
+    ints = center.get("Ints", 0) or 0
+    int_yards = center.get("Int Yards", 0) or 0
+
+    # --- Ball-Hawk ---
+    if ints >= 4:
+        scores["Ball-Hawk Corner"] += 3
+    if pdef >= 10:
+        scores["Ball-Hawk Corner"] += 2
+    if int_yards >= 80:
+        scores["Ball-Hawk Corner"] += 1
+
+    # --- Shutdown (low target) ---
+    if tackles <= 45 and pdef <= 8 and ints <= 3:
+        scores["Shutdown Corner"] += 3
+
+    # --- Nickel Corner ---
+    if tackles >= 60:
+        scores["Nickel Corner"] += 3
+    if pdef >= 6 and ints <= 3:
+        scores["Nickel Corner"] += 1
+
+    # --- Zone Corner ---
+    # More help tackling, more PD than INTs
+    if tackles >= 50 and pdef >= 8 and ints <= 4:
+        scores["Zone Corner"] += 3
+
+    return scores
+
+# Safety Archhetypes
+
+def classify_s_archetype(center: dict) -> str:
+    """
+    Safety archetypes:
+      - Free Safety / Centerfielder
+      - Box Safety
+      - Hybrid SS/LB
+      - Blitz Safety
+    Uses: Total Tackles, Sacks, Passes Defended, Ints, Safties
+    """
+    scores = {
+        "Free Safety / Centerfielder": 0,
+        "Box Safety": 0,
+        "Hybrid SS/LB": 0,
+        "Blitz Safety": 0,
+    }
+
+    tackles = center.get("Total Tackles", 0) or 0
+    sacks = center.get("Sacks", 0) or 0
+    pdef = center.get("Passes Defended", 0) or 0
+    ints = center.get("Ints", 0) or 0
+    safeties = center.get("Safties", 0) or 0  # column spelled this way
+
+    # --- Free Safety / Centerfielder ---
+    if ints >= 4:
+        scores["Free Safety / Centerfielder"] += 3
+    if pdef >= 9:
+        scores["Free Safety / Centerfielder"] += 2
+    if tackles <= 80:
+        scores["Free Safety / Centerfielder"] += 1
+
+    # --- Box Safety ---
+    if tackles >= 90:
+        scores["Box Safety"] += 3
+    if sacks >= 2:
+        scores["Box Safety"] += 1
+    if ints <= 3:
+        scores["Box Safety"] += 1
+
+    # --- Hybrid SS/LB ---
+    if tackles >= 100:
+        scores["Hybrid SS/LB"] += 2
+    if sacks >= 2 and pdef >= 6:
+        scores["Hybrid SS/LB"] += 2
+
+    # --- Blitz Safety ---
+    if sacks >= 3:
+        scores["Blitz Safety"] += 3
+    if safeties >= 1:
+        scores["Blitz Safety"] += 2
+
+    return scores
+
+
+def classify_archetype(center, position_group):
+    if position_group == "QB":
+        return classify_qb_archetype(center)
+    if position_group == "RB":
+        return classify_rb_archetype(center)
+    if position_group == "WR":
+        return classify_wr_archetype(center)
+    if position_group == "DL":
+        return classify_dl_archetype(center)
+    if position_group == "LB":
+        return classify_lb_archetype(center)
+    if position_group == "CB":
+        return classify_cb_archetype(center)
+    if position_group == "S":
+        return classify_s_archetype(center)
+    return "Unknown Archetype"
+
+def get_player_archetype_debug(player_row):
+    """
+    Return (label, scores_dict) for a single player based on the same
+    feature construction used in clustering.
+    """
+    if "Player Id" not in player_row:
+        return "Unknown", {}
+
+    pid = player_row["Player Id"]
+
+    # Reuse your cluster feature builder
+    cluster_features_df, all_feature_cols = build_cluster_feature_df()
+    if cluster_features_df.empty:
+        return "Unknown", {}
+
+    row = cluster_features_df[cluster_features_df["Player Id"] == pid]
+    if row.empty:
+        return "Unknown", {}
+
+    row = row.iloc[0]
+
+    # Build feature dict
+    feat_dict = {col: float(row[col]) for col in all_feature_cols if col in row}
+
+    pos_group = normalize_position(player_row["Position"])
+    label, scores = classify_archetype(feat_dict, pos_group, return_scores=True)
+
+    return label, scores
 
 # ----------------------------------------------------------
 # PLAYER SIMILARITY MODEL
@@ -1598,155 +1954,195 @@ with tab_leaders:
 # ----------------------------------------------------------
 # PLAYER CLUSTERS TAB
 # ----------------------------------------------------------
-with tab_clusters:
-    st.markdown("### Player Clusters (K-Means)")
+# with tab_clusters:
+#     st.markdown("### Player Clusters (K-Means)")
 
-    cluster_features_df, all_feature_cols = build_cluster_feature_df()
+#     # Build base feature matrix (same as for similarity)
+#     cluster_features_df, all_feature_cols = build_cluster_feature_df()
 
-    if cluster_features_df.empty:
-        st.info("No feature data available for clustering.")
-    else:
-        # Respect current sidebar filters (team + position)
-        if "Player Id" in df_filtered.columns:
-            cluster_df = cluster_features_df[
-                cluster_features_df["Player Id"].isin(df_filtered["Player Id"])
-            ].copy()
-        else:
-            cluster_df = cluster_features_df.copy()
+#     if cluster_features_df.empty:
+#         st.info("No feature data available for clustering.")
+#     else:
+#         # Respect current sidebar filters (team + position)
+#         if "Player Id" in df_filtered.columns:
+#             cluster_df = cluster_features_df[
+#                 cluster_features_df["Player Id"].isin(df_filtered["Player Id"])
+#             ].copy()
+#         else:
+#             cluster_df = cluster_features_df.copy()
 
-        if cluster_df.empty:
-            st.info("No players available under current filters to cluster.")
-        else:
-            # Position filter within cluster tab
-            pos_options = (
-                cluster_df["Position"]
-                .fillna("Unknown")
-                .astype(str)
-                .sort_values()
-                .unique()
-                .tolist()
-            )
-            pos_choice = st.selectbox(
-                "Position group to cluster",
-                ["All Positions"] + pos_options,
-                index=0,
-                key="cluster_pos_choice",
-            )
+#         if cluster_df.empty:
+#             st.info("No players available under current filters to cluster.")
+#         else:
+#             # Position filter inside cluster tab
+#             pos_options = (
+#                 cluster_df["Position"]
+#                 .fillna("Unknown")
+#                 .astype(str)
+#                 .sort_values()
+#                 .unique()
+#                 .tolist()
+#             )
 
-            if pos_choice != "All Positions":
-                cluster_df = cluster_df[cluster_df["Position"] == pos_choice].copy()
+#             pos_choice = st.selectbox(
+#                 "Position group to cluster",
+#                 ["All Positions"] + pos_options,
+#                 index=0,
+#                 key="cluster_pos_choice",
+#             )
 
-            if cluster_df.empty:
-                st.info("No players match this position filter.")
-            else:
-                # Feature set choice
-                feature_group = st.radio(
-                    "Feature group",
-                    ["All", "Offense", "Defense", "Special Teams"],
-                    index=0,
-                    horizontal=True,
-                    key="cluster_feature_group",
-                )
+#             if pos_choice != "All Positions":
+#                 cluster_df = cluster_df[cluster_df["Position"] == pos_choice].copy()
 
-                if feature_group == "Offense":
-                    feature_cols = [
-                        c for c in all_feature_cols
-                        if c in ["PassYds", "PassTD", "IntThrown",
-                                 "RushYds", "RushTD",
-                                 "RecYds", "RecTD"]
-                    ]
-                elif feature_group == "Defense":
-                    feature_cols = [
-                        c for c in all_feature_cols
-                        if c in ["Tackles", "Sacks", "DefInts"]
-                    ]
-                elif feature_group == "Special Teams":
-                    feature_cols = [
-                        c for c in all_feature_cols
-                        if c in ["FGMade", "XPMade", "Punts", "PuntYds", "KR_Yds", "PR_Yds"]
-                    ]
-                else:  # "All"
-                    feature_cols = all_feature_cols
+#             if cluster_df.empty:
+#                 st.info("No players match this position filter.")
+#             else:
+#                 # Choose which feature group to use
+#                 feature_group = st.radio(
+#                     "Feature group",
+#                     ["All", "Offense", "Defense", "Special Teams"],
+#                     index=0,
+#                     horizontal=True,
+#                     key="cluster_feature_group",
+#                 )
 
-                # Make sure we actually have something numeric
-                feature_cols = [c for c in feature_cols if c in cluster_df.columns]
+#                 if feature_group == "Offense":
+#                     base_feature_cols = [
+#                         "PassYds", "PassTD", "IntThrown",
+#                         "RushYds", "RushTD",
+#                         "RecYds", "RecTD",
+#                     ]
+#                 elif feature_group == "Defense":
+#                     base_feature_cols = ["Tackles", "Sacks", "DefInts"]
+#                 elif feature_group == "Special Teams":
+#                     base_feature_cols = [
+#                         "FGMade", "XPMade",
+#                         "Punts", "PuntYds",
+#                         "KR_Yds", "PR_Yds",
+#                     ]
+#                 else:  # "All"
+#                     base_feature_cols = list(all_feature_cols)
 
-                if not feature_cols:
-                    st.info("No numeric features available for the selected group.")
-                else:
-                    # Filter out players with all-zero features (optional)
-                    mat = cluster_df[feature_cols].to_numpy()
-                    non_zero_mask = (mat.sum(axis=1) != 0)
-                    cluster_df = cluster_df[non_zero_mask]
-                    mat = mat[non_zero_mask]
+#                 # Only keep features that actually exist in this df
+#                 feature_cols = [c for c in base_feature_cols if c in cluster_df.columns]
 
-                    if cluster_df.shape[0] < 2:
-                        st.info("Not enough players with non-zero stats to form clusters.")
-                    else:
-                        # Number of clusters
-                        max_k = min(10, cluster_df.shape[0])
-                        k = st.slider(
-                            "Number of clusters (K)",
-                            min_value=2,
-                            max_value=max_k,
-                            value=min(5, max_k),
-                            step=1,
-                            key="cluster_k",
-                        )
+#                 if not feature_cols:
+#                     st.info("No numeric features available for the selected group.")
+#                 else:
+#                     # Filter out players with all-zero features (optional)
+#                     mat = cluster_df[feature_cols].to_numpy()
+#                     non_zero_mask = (mat.sum(axis=1) != 0)
+#                     cluster_df = cluster_df[non_zero_mask].copy()
+#                     mat = mat[non_zero_mask]
 
-                        # Scale + cluster
-                        scaler = StandardScaler()
-                        X_scaled = scaler.fit_transform(mat)
+#                     if cluster_df.shape[0] < 2:
+#                         st.info("Not enough players with non-zero stats to form clusters.")
+#                     else:
+#                         # Number of clusters
+#                         max_k = min(10, cluster_df.shape[0])
+#                         k = st.slider(
+#                             "Number of clusters (K)",
+#                             min_value=2,
+#                             max_value=max_k,
+#                             value=min(5, max_k),
+#                             step=1,
+#                             key="cluster_k",
+#                         )
 
-                        kmeans = KMeans(
-                            n_clusters=k,
-                            random_state=42,
-                            n_init=10,
-                        )
-                        labels = kmeans.fit_predict(X_scaled)
+#                         # Scale + cluster
+#                         scaler = StandardScaler()
+#                         X_scaled = scaler.fit_transform(mat)
 
-                        cluster_df = cluster_df.copy()
-                        cluster_df["Cluster"] = labels
+#                         kmeans = KMeans(
+#                             n_clusters=k,
+#                             random_state=42,
+#                             n_init=10,
+#                         )
+#                         labels = kmeans.fit_predict(X_scaled)
 
-                        st.markdown("#### Cluster Assignments (Filtered Players)")
-                        st.dataframe(
-                            cluster_df[["Name", "Current Team", "Position", "Cluster"] + feature_cols]
-                            .sort_values(by="Cluster")
-                        )
+#                         cluster_df = cluster_df.copy()
+#                         cluster_df["Cluster"] = labels
 
-                        # Simple 2D scatter using two chosen features
-                        if len(feature_cols) >= 2:
-                            x_feat = st.selectbox(
-                                "X-axis feature",
-                                feature_cols,
-                                index=0,
-                                key="cluster_x_feat",
-                            )
-                            y_feat = st.selectbox(
-                                "Y-axis feature",
-                                feature_cols,
-                                index=1,
-                                key="cluster_y_feat",
-                            )
+#                         # ----- Archetype labels per cluster -----
+#                         cluster_label_map = {}
+#                         for i in range(k):
+#                             # center in original (unscaled) feature units
+#                             center_scaled = kmeans.cluster_centers_[i].reshape(1, -1)
+#                             center_raw = scaler.inverse_transform(center_scaled)[0]
+#                             center_dict = dict(zip(feature_cols, center_raw))
 
-                            scatter_df = cluster_df[["Name", "Current Team", "Position", "Cluster", x_feat, y_feat]].copy()
+#                             # dominant position in this cluster
+#                             cluster_positions = (
+#                                 cluster_df.loc[cluster_df["Cluster"] == i, "Position"]
+#                                 .dropna()
+#                                 .astype(str)
+#                                 .tolist()
+#                             )
+#                             if cluster_positions:
+#                                 pos_counts = {}
+#                                 for p in cluster_positions:
+#                                     pos_counts[p] = pos_counts.get(p, 0) + 1
+#                                 dominant_pos = max(pos_counts, key=pos_counts.get)
+#                             else:
+#                                 dominant_pos = "OTHER"
 
-                            chart = (
-                                alt.Chart(scatter_df)
-                                .mark_circle(size=80)
-                                .encode(
-                                    x=alt.X(f"{x_feat}:Q", title=x_feat),
-                                    y=alt.Y(f"{y_feat}:Q", title=y_feat),
-                                    color=alt.Color("Cluster:N", title="Cluster"),
-                                    tooltip=["Name", "Position", "Current Team", x_feat, y_feat],
-                                )
-                                .properties(height=400)
-                            )
+#                             pos_group = normalize_position(dominant_pos)
+#                             label = classify_archetype(center_dict, pos_group)
+#                             cluster_label_map[i] = label
 
-                            st.markdown("#### Cluster Visualization")
-                            st.altair_chart(chart, use_container_width=True)
-                        else:
-                            st.info("Not enough features to make a 2D scatter plot.")
+#                         cluster_df["Archetype"] = cluster_df["Cluster"].map(cluster_label_map)
+
+#                         st.markdown("#### Cluster Assignments (Filtered Players)")
+#                         cols_to_show = ["Name", "Current Team", "Position", "Cluster", "Archetype"] + feature_cols
+#                         cols_to_show = [c for c in cols_to_show if c in cluster_df.columns]
+
+#                         st.dataframe(
+#                             cluster_df[cols_to_show].sort_values(by=["Cluster", "Name"])
+#                         )
+
+#                         # 2D scatter
+#                         if len(feature_cols) >= 2:
+#                             x_feat = st.selectbox(
+#                                 "X-axis feature",
+#                                 feature_cols,
+#                                 index=0,
+#                                 key="cluster_x_feat",
+#                             )
+#                             y_feat = st.selectbox(
+#                                 "Y-axis feature",
+#                                 feature_cols,
+#                                 index=1,
+#                                 key="cluster_y_feat",
+#                             )
+
+#                             scatter_df = cluster_df[
+#                                 ["Name", "Current Team", "Position", "Cluster", "Archetype", x_feat, y_feat]
+#                             ].copy()
+
+#                             chart = (
+#                                 alt.Chart(scatter_df)
+#                                 .mark_circle(size=80)
+#                                 .encode(
+#                                     x=alt.X(f"{x_feat}:Q", title=x_feat),
+#                                     y=alt.Y(f"{y_feat}:Q", title=y_feat),
+#                                     color=alt.Color("Archetype:N", title="Archetype"),
+#                                     tooltip=[
+#                                         "Name",
+#                                         "Position",
+#                                         "Current Team",
+#                                         "Cluster",
+#                                         "Archetype",
+#                                         x_feat,
+#                                         y_feat,
+#                                     ],
+#                                 )
+#                                 .properties(height=400, title="Player Clusters by Archetype")
+#                             )
+
+#                             st.markdown("#### Cluster Visualization")
+#                             st.altair_chart(chart, use_container_width=True)
+#                         else:
+#                             st.info("Not enough features to make a 2D scatter plot.")
 
 
 # ----------------------------------------------------------
@@ -1822,6 +2218,34 @@ with col2:
     st.write(f"**College:** {player_data['College']}")
     st.write(f"**Birth Place:** {player_data['Birth Place']}")
     st.write(f"**Birthday:** {player_data['Birthday']}")
+
+# ----------------------------------------------------------
+# ARCHETYPE DEBUG SECTION
+# ----------------------------------------------------------
+archetype_label, archetype_scores = get_player_archetype_debug(player_data)
+
+st.subheader("Experimental Archetype (Debug)")
+
+if not archetype_scores:
+    st.info("No archetype data available for this player.")
+else:
+    st.markdown(f"**Guessed Archetype:** {archetype_label}")
+
+    # Show a small table of scores
+    scores_df = (
+        pd.DataFrame(
+            [
+                {"Archetype": name, "Score": float(score)}
+                for name, score in archetype_scores.items()
+            ]
+        )
+        .sort_values(by="Score", ascending=False)
+        .reset_index(drop=True)
+    )
+
+    st.markdown("**Archetype Scores (higher = stronger match)**")
+    st.dataframe(scores_df)
+
 
 # ----------------------------------------------------------
 # GENERIC CAREER STATS SECTION
@@ -1955,57 +2379,6 @@ def show_generic_career_stats(
 
     st.markdown("#### Career Summary")
     st.dataframe(formatted_df)
-
-    # ----------------------------------------------------------
-    # SIMILAR PLAYERS (EMBEDDING-BASED)
-    # ----------------------------------------------------------
-    st.write("---")
-    st.subheader("Similar Players (Career Stats)")
-
-    sim_feature_group = st.radio(
-        "Similarity based on",
-        ["All", "Offense", "Defense", "Special Teams"],
-        index=0,
-        horizontal=True,
-        key="sim_feat_group",
-    )
-
-    sim_k = st.slider(
-        "Number of similar players to show",
-        min_value=3,
-        max_value=15,
-        value=8,
-        step=1,
-        key="sim_k",
-    )
-
-    sim_df = get_similar_players(
-        player_row=player_data,
-        feature_group=sim_feature_group,
-        n_neighbors=sim_k,
-    )
-
-    if sim_df is None or sim_df.empty:
-        st.info("Not enough data to compute similar players for this selection.")
-    else:
-        st.markdown("These players have similar **career stat profiles**:")
-
-        st.dataframe(sim_df)
-
-        # Bar chart of similarity
-        chart = (
-            alt.Chart(sim_df)
-            .mark_bar()
-            .encode(
-                y=alt.Y("Name:N", sort="-x", title="Player"),
-                x=alt.X("Similarity:Q", scale=alt.Scale(domain=[0, 1]), title="Similarity"),
-                color=alt.value("#1f77b4"),
-                tooltip=["Name", "Position", "Current Team", "Similarity"],
-            )
-            .properties(height=300)
-        )
-        st.altair_chart(chart, use_container_width=True)
-
 
     # ---------- PLOT OVER TIME ----------
     if year_col not in player_rows.columns:
